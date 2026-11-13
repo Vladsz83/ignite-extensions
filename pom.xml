@@ -43,6 +43,7 @@
         <module>modules/spring-data-commons</module>
         <module>modules/performance-statistics-ext</module>
         <module>modules/cdc-ext</module>
+        <module>modules/data-migration-ext</module>
         <module>modules/aws-ext</module>
         <module>modules/azure-ext</module>
         <module>modules/gce-ext</module>
