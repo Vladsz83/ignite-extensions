@@ -17,6 +17,9 @@
 
 package org.apache.ignite.util.migration.api;
 
-/** */
-public interface MigrationTransformer {
+/** A channel filter/transformer. Returning {@code null} filters out an item. Implementations must be thread-safe. */
+@FunctionalInterface
+public interface MigrationTransformer<T> {
+    /** @return Transformed item, or {@code null} to skip it. */
+    T transform(T item);
 }

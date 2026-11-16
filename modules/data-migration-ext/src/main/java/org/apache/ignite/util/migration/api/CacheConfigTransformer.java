@@ -17,6 +17,14 @@
 
 package org.apache.ignite.util.migration.api;
 
-/** */
-public interface MigrationChannel {
+import java.util.Map;
+import java.util.function.BiFunction;
+import org.apache.ignite.configuration.CacheConfiguration;
+import org.apache.ignite.configuration.IgniteConfiguration;
+
+/** Optional parameterized, destination-aware cache configuration transformer with a public no-argument constructor. */
+public interface CacheConfigTransformer
+    extends BiFunction<IgniteConfiguration, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> {
+    /** Called once before applying the transformer. The destination configuration is null for custom destinations. */
+    void configure(Map<String, String> parameters);
 }

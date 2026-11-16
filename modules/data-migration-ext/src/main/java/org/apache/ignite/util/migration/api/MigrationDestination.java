@@ -17,6 +17,26 @@
 
 package org.apache.ignite.util.migration.api;
 
-/** */
+import java.io.Serializable;
+import java.util.List;
+import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.internal.binary.BinaryMetadata;
+
+/** Write side of the migration. The runner may invoke {@link #write} concurrently. */
 public interface MigrationDestination extends MigrationOrigin {
+    /** Registers a schema without changing its type ID. */
+    void binaryMetadata(BinaryMetadata meta);
+
+    /** Registers a mapping without changing its type ID. */
+    void typeMapping(MigrationTypeMapping mapping);
+
+    /** Creates or validates a destination cache before any records are written. */
+    void cache(MigrationCache cache, IgniteToIgniteMigrationConfiguration cfg);
+
+    /** Writes a selected distributed metadata item. */
+    void metastorage(String key, Serializable val) throws IgniteCheckedException;
+
+    /** Writes one batch synchronously; failures must be propagated to the runner. */
+    void write(String cache, List<MigrationEntry> entries, IgniteToIgniteMigrationConfiguration cfg)
+        throws IgniteCheckedException;
 }

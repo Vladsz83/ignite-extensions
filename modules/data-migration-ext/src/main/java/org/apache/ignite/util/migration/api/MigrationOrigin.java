@@ -17,10 +17,13 @@
 
 package org.apache.ignite.util.migration.api;
 
-import java.io.Closeable;
 import org.apache.ignite.IgniteCheckedException;
 
-/** */
-public interface MigrationOrigin extends Closeable {
+/** An owned migration endpoint. Instances are single-use and closed by the migration runner. */
+public interface MigrationOrigin extends AutoCloseable {
+    /** Opens the connection. */
     void connect() throws IgniteCheckedException;
+
+    /** Releases all resources, including after a partially failed connection attempt. */
+    @Override void close();
 }

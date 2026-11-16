@@ -17,6 +17,31 @@
 
 package org.apache.ignite.util.migration.api;
 
-/** */
+import java.io.Serializable;
+import java.util.Collection;
+import java.util.List;
+import java.util.Map;
+import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.cache.query.QueryCursor;
+import org.apache.ignite.internal.binary.BinaryMetadata;
+
+/** Read side of the migration. Partition cursors may be opened concurrently. */
 public interface MigrationSource extends MigrationOrigin {
+    /** @return Binary schemas. */
+    Collection<BinaryMetadata> binaryMetadata();
+
+    /** @return Platform mappings. */
+    Collection<MigrationTypeMapping> typeMappings();
+
+    /** @return Current cache definitions, including dynamically changed SQL entities. */
+    Collection<MigrationCache> caches();
+
+    /** @return Distributed metadata selected by the configured filter. */
+    Map<String, Serializable> metastorage(IgniteToIgniteMigrationConfiguration cfg) throws IgniteCheckedException;
+
+    /** @return Partition tasks interleaved by primary server. */
+    List<MigrationPartition> partitions(Map<String, String> cacheNames);
+
+    /** Opens a cursor owned by the caller. */
+    QueryCursor<MigrationEntry> read(MigrationPartition part, IgniteToIgniteMigrationConfiguration cfg);
 }
