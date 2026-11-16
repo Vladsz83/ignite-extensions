@@ -25,6 +25,10 @@ import org.apache.ignite.configuration.IgniteConfiguration;
 /** Optional parameterized, destination-aware cache configuration transformer with a public no-argument constructor. */
 public interface CacheConfigTransformer
     extends BiFunction<IgniteConfiguration, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> {
-    /** Called once before applying the transformer. The destination configuration is null for custom destinations. */
+    /**
+     * Called once before applying the transformer. The destination configuration is null for custom destinations.
+     *
+     * @param parameters Transformer parameters.
+     */
     void configure(Map<String, String> parameters);
 }

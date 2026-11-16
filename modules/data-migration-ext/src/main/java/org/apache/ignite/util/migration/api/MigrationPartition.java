@@ -28,7 +28,11 @@ public class MigrationPartition {
     /** */
     private final int part;
 
-    /** Creates a partition task. */
+    /**
+     * @param srcCache Source cache name.
+     * @param destCache Destination cache name.
+     * @param part Partition number.
+     */
     public MigrationPartition(String srcCache, String destCache, int part) {
         this.srcCache = srcCache;
         this.destCache = destCache;

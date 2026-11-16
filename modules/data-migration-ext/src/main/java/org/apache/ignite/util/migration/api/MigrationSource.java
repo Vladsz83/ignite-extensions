@@ -36,12 +36,28 @@ public interface MigrationSource extends MigrationOrigin {
     /** @return Current cache definitions, including dynamically changed SQL entities. */
     Collection<MigrationCache> caches();
 
-    /** @return Distributed metadata selected by the configured filter. */
+    /**
+     * @param cfg Migration configuration.
+     * @return Distributed settings selected by the configured filter, excluding SQL views.
+     */
     Map<String, Serializable> metastorage(IgniteToIgniteMigrationConfiguration cfg) throws IgniteCheckedException;
 
-    /** @return Partition tasks interleaved by primary server. */
+    /**
+     * @param cfg Migration configuration.
+     * @return SQL view definitions selected by the configured metadata filter.
+     */
+    Map<String, Serializable> sqlViews(IgniteToIgniteMigrationConfiguration cfg) throws IgniteCheckedException;
+
+    /**
+     * @param cacheNames Source to destination cache names.
+     * @return Partition tasks interleaved by primary server.
+     */
     List<MigrationPartition> partitions(Map<String, String> cacheNames);
 
-    /** Opens a cursor owned by the caller. */
+    /**
+     * @param part Source partition.
+     * @param cfg Migration configuration.
+     * @return Cursor to be closed by the caller.
+     */
     QueryCursor<MigrationEntry> read(MigrationPartition part, IgniteToIgniteMigrationConfiguration cfg);
 }

@@ -38,6 +38,7 @@
         <dependency>
             <groupId>org.apache.ignite</groupId>
             <artifactId>ignite-core</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.ignite</groupId>
@@ -54,9 +55,20 @@
             <artifactId>ignite-log4j2</artifactId>
             <scope>test</scope>
         </dependency>
+        <dependency>
+            <groupId>org.apache.ignite</groupId>
+            <artifactId>ignite-indexing</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>
+        <testResources>
+            <testResource>
+                <directory>config</directory>
+                <targetPath>migration</targetPath>
+            </testResource>
+        </testResources>
         <plugins>
             <plugin>
                 <artifactId>maven-dependency-plugin</artifactId>

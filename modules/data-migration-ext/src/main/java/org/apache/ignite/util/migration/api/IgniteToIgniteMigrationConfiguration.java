@@ -19,13 +19,15 @@ package org.apache.ignite.util.migration.api;
 
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.EnumMap;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import org.apache.ignite.IgniteDataStreamer;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.logger.java.JavaLogger;
@@ -51,7 +53,16 @@ public class IgniteToIgniteMigrationConfiguration {
     private boolean skipExpireTime;
 
     /** */
-    private boolean skipCdcInfo;
+    private boolean skipConflictVersion;
+
+    /** */
+    private boolean moveDataStructures = true;
+
+    /** */
+    private boolean useDataStreamer;
+
+    /** */
+    private Consumer<IgniteDataStreamer<Object, Object>> streamerCfg = streamer -> { /* No-op. */ };
 
     /** */
     private int batchSize = 1;
@@ -79,7 +90,7 @@ public class IgniteToIgniteMigrationConfiguration {
         key.startsWith("distrConf-sql.");
 
     /** */
-    private final Map<MigrationChannelType, MigrationTransformer<?>> transformers = new EnumMap<>(MigrationChannelType.class);
+    private final Map<Class<? extends MigrationChannel<?>>, MigrationTransformer<?>> transformers = new HashMap<>();
 
     /** */
     private IgniteLogger log = new JavaLogger();
@@ -104,13 +115,19 @@ public class IgniteToIgniteMigrationConfiguration {
             throw new IllegalArgumentException(name + " must be positive");
     }
 
-    /** @return Whether a source cache belongs to a selected group. Ungrouped caches use their cache name. */
+    /**
+     * @param cfg Source cache configuration.
+     * @return Whether the source cache belongs to a selected group. Ungrouped caches use their cache name.
+     */
     public boolean includes(CacheConfiguration<?, ?> cfg) {
         return cacheGrpNames.isEmpty() || cacheGrpNames.contains(cfg.getGroupName() == null ?
             cfg.getName() : cfg.getGroupName());
     }
 
-    /** Sets source cache group names. An empty set selects all user caches. */
+    /**
+     * @param names Source cache group names. An empty set selects all user caches.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setCacheGroupNames(String... names) {
         cacheGrpNames = new HashSet<>(Arrays.asList(names));
 
@@ -125,9 +142,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return noCacheCreate;
     }
 
-    /** Sets whether all selected destination caches must already exist. */
+    /**
+     * @param val Whether all selected destination caches must already exist.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setNoCacheCreate(boolean val) {
         noCacheCreate = val;
+
         return this;
     }
 
@@ -136,9 +157,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return createCacheIfNotExists;
     }
 
-    /** Sets whether existing destination caches are accepted. */
+    /**
+     * @param val Whether existing destination caches are accepted.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setCreateCacheIfNotExists(boolean val) {
         createCacheIfNotExists = val;
+
         return this;
     }
 
@@ -147,9 +172,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return noBinaryMetadataCreate;
     }
 
-    /** Disables explicit binary schema registration. */
+    /**
+     * @param val Whether to skip explicit binary metadata registration.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setNoBinaryMetadataCreate(boolean val) {
         noBinaryMetadataCreate = val;
+
         return this;
     }
 
@@ -158,9 +187,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return noMappingsCreate;
     }
 
-    /** Disables explicit mapping registration. */
+    /**
+     * @param val Whether to skip explicit type mapping registration.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setNoMappingsCreate(boolean val) {
         noMappingsCreate = val;
+
         return this;
     }
 
@@ -169,20 +202,75 @@ public class IgniteToIgniteMigrationConfiguration {
         return skipExpireTime;
     }
 
-    /** Sets whether source expiry is ignored. */
+    /**
+     * @param val Whether source expiration timestamps are ignored.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setSkipExpireTime(boolean val) {
         skipExpireTime = val;
+
         return this;
     }
 
     /** @return Whether source conflict versions are ignored. */
-    public boolean isSkipCdcInfo() {
-        return skipCdcInfo;
+    public boolean isSkipConflictVersion() {
+        return skipConflictVersion;
     }
 
-    /** Sets whether ordinary writes replace conflict-aware writes. */
-    public IgniteToIgniteMigrationConfiguration setSkipCdcInfo(boolean val) {
-        skipCdcInfo = val;
+    /**
+     * @param val Whether source conflict versions are ignored.
+     * @return {@code this} for chaining.
+     */
+    public IgniteToIgniteMigrationConfiguration setSkipConflictVersion(boolean val) {
+        skipConflictVersion = val;
+
+        return this;
+    }
+
+    /** @return Whether data structure caches are included. */
+    public boolean isMoveDataStructures() {
+        return moveDataStructures;
+    }
+
+    /**
+     * @param val Whether to include data structure caches.
+     * @return {@code this} for chaining.
+     */
+    public IgniteToIgniteMigrationConfiguration setMoveDataStructures(boolean val) {
+        moveDataStructures = val;
+
+        return this;
+    }
+
+    /** @return Whether to load data using a data streamer. */
+    public boolean isUseDataStreamer() {
+        return useDataStreamer;
+    }
+
+    /**
+     * @param val Whether to load data using a data streamer.
+     * @return {@code this} for chaining.
+     */
+    public IgniteToIgniteMigrationConfiguration setUseDataStreamer(boolean val) {
+        useDataStreamer = val;
+
+        return this;
+    }
+
+    /** @return Data streamer configuration callback. */
+    public Consumer<IgniteDataStreamer<Object, Object>> getDataStreamerConfiguration() {
+        return streamerCfg;
+    }
+
+    /**
+     * @param cfg Data streamer configuration callback, invoked once per cache before adding data.
+     * @return {@code this} for chaining.
+     */
+    public IgniteToIgniteMigrationConfiguration setDataStreamerConfiguration(
+        Consumer<IgniteDataStreamer<Object, Object>> cfg
+    ) {
+        streamerCfg = Objects.requireNonNull(cfg);
+
         return this;
     }
 
@@ -191,9 +279,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return batchSize;
     }
 
-    /** Sets maximum entries per batch. */
+    /**
+     * @param val Maximum number of entries per batch.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setBatchSize(int val) {
         batchSize = val;
+
         return this;
     }
 
@@ -202,9 +294,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return readThreads;
     }
 
-    /** Sets reader count. */
+    /**
+     * @param val Number of reader threads.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setReadThreads(int val) {
         readThreads = val;
+
         return this;
     }
 
@@ -213,9 +309,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return writeThreads;
     }
 
-    /** Sets writer count. */
+    /**
+     * @param val Number of writer threads.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setWriteThreads(int val) {
         writeThreads = val;
+
         return this;
     }
 
@@ -224,9 +324,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return queueCapacity;
     }
 
-    /** Sets maximum queued batches (backpressure). */
+    /**
+     * @param val Maximum number of queued batches.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setQueueCapacity(int val) {
         queueCapacity = val;
+
         return this;
     }
 
@@ -235,9 +339,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return readLimit;
     }
 
-    /** Sets global read entries per second. */
+    /**
+     * @param val Global read rate in entries per second, or zero for unlimited.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setReadLimitInSec(int val) {
         readLimit = val;
+
         return this;
     }
 
@@ -246,9 +354,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return writeLimit;
     }
 
-    /** Sets global write entries per second. */
+    /**
+     * @param val Global write rate in entries per second, or zero for unlimited.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setWriteLimitInSec(int val) {
         writeLimit = val;
+
         return this;
     }
 
@@ -257,11 +369,15 @@ public class IgniteToIgniteMigrationConfiguration {
         return cacheCfgTransformer;
     }
 
-    /** Sets a cache transformer; returning null excludes the cache and its data. */
+    /**
+     * @param transformer Cache configuration transformer. Returning {@code null} excludes the cache and its data.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setCacheConfigurationTransformer(
         Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer
     ) {
         cacheCfgTransformer = Objects.requireNonNull(transformer);
+
         return this;
     }
 
@@ -270,22 +386,53 @@ public class IgniteToIgniteMigrationConfiguration {
         return metastorageFilter;
     }
 
-    /** Sets the distributed metadata allowlist. Local authentication/encryption storage is never enumerated. */
+    /**
+     * @param filter Distributed metadata key filter. Local metastorage is never enumerated.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setMetastorageFilter(Predicate<String> filter) {
         metastorageFilter = Objects.requireNonNull(filter);
+
         return this;
     }
 
-    /** Sets a channel transformer; see the endpoint methods for the corresponding item type. */
-    public <T> IgniteToIgniteMigrationConfiguration setTransformer(MigrationChannelType channel, MigrationTransformer<T> transformer) {
+    /**
+     * @param <T> Channel item type.
+     * @param channel Migration channel class.
+     * @param transformer Channel transformer. Returning {@code null} skips an item.
+     * @return {@code this} for chaining.
+     */
+    public <T> IgniteToIgniteMigrationConfiguration setTransformer(
+        Class<? extends MigrationChannel<T>> channel,
+        MigrationTransformer<T> transformer
+    ) {
         transformers.put(channel, Objects.requireNonNull(transformer));
+
         return this;
     }
 
-    /** Applies a configured channel transformer. */
+    /**
+     * @param <T> Channel item type.
+     * @param channel Migration channel class.
+     * @return Configured transformer, or an identity transformer if none is configured.
+     */
     @SuppressWarnings("unchecked")
-    public <T> T transform(MigrationChannelType channel, T item) {
+    public <T> MigrationTransformer<T> getTransformer(Class<? extends MigrationChannel<T>> channel) {
         MigrationTransformer<T> transformer = (MigrationTransformer<T>)transformers.get(channel);
+
+        return transformer == null ? item -> item : transformer;
+    }
+
+    /**
+     * @param <T> Channel item type.
+     * @param channel Migration channel.
+     * @param item Channel item.
+     * @return Transformed item, or {@code null} to skip it.
+     */
+    @SuppressWarnings("unchecked")
+    public <T> T transform(MigrationChannel<T> channel, T item) {
+        MigrationTransformer<T> transformer = (MigrationTransformer<T>)transformers.get(channel.getClass());
+
         return transformer == null ? item : transformer.transform(item);
     }
 
@@ -294,10 +441,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return log;
     }
 
-    /** Sets the logger shared by all migration workers. */
+    /**
+     * @param log Migration logger.
+     * @return {@code this} for chaining.
+     */
     public IgniteToIgniteMigrationConfiguration setLogger(IgniteLogger log) {
         this.log = Objects.requireNonNull(log);
+
         return this;
     }
-
 }

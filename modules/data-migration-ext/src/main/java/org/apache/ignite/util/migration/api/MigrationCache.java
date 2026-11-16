@@ -18,6 +18,7 @@
 package org.apache.ignite.util.migration.api;
 
 import org.apache.ignite.configuration.CacheConfiguration;
+import org.apache.ignite.internal.processors.cache.CacheType;
 
 /** A cache definition, retaining the SQL-created flag and the original source name. */
 public class MigrationCache {
@@ -30,11 +31,29 @@ public class MigrationCache {
     /** */
     private final boolean sql;
 
-    /** Creates a cache definition. */
+    /** */
+    private final CacheType type;
+
+    /**
+     * @param srcName Source cache name.
+     * @param cfg Cache configuration.
+     * @param sql SQL-created flag.
+     */
     public MigrationCache(String srcName, CacheConfiguration<?, ?> cfg, boolean sql) {
+        this(srcName, cfg, sql, CacheType.USER);
+    }
+
+    /**
+     * @param srcName Source cache name.
+     * @param cfg Cache configuration.
+     * @param sql SQL-created flag.
+     * @param type Cache type.
+     */
+    public MigrationCache(String srcName, CacheConfiguration<?, ?> cfg, boolean sql, CacheType type) {
         this.srcName = srcName;
         this.cfg = cfg;
         this.sql = sql;
+        this.type = type;
     }
 
     /** @return Source cache name. */
@@ -50,5 +69,10 @@ public class MigrationCache {
     /** @return Whether the cache was created through SQL. */
     public boolean sql() {
         return sql;
+    }
+
+    /** @return Cache type. */
+    public CacheType type() {
+        return type;
     }
 }

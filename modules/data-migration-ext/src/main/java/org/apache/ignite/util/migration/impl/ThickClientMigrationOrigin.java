@@ -21,40 +21,48 @@ import java.io.Serializable;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Queue;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Predicate;
 import javax.cache.expiry.Duration;
-import javax.cache.expiry.EternalExpiryPolicy;
-import javax.cache.expiry.ExpiryPolicy;
+import javax.cache.expiry.ModifiedExpiryPolicy;
 import org.apache.ignite.IgniteCache;
 import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.IgniteDataStreamer;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.Ignition;
 import org.apache.ignite.cache.CacheExistsException;
 import org.apache.ignite.cache.QueryEntity;
 import org.apache.ignite.cache.query.QueryCursor;
-import org.apache.ignite.cache.query.ScanQuery;
+import org.apache.ignite.cluster.ClusterNode;
 import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.configuration.IgniteConfiguration;
 import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.binary.BinaryContext;
 import org.apache.ignite.internal.binary.BinaryMetadata;
-import org.apache.ignite.internal.binary.BinaryTypeImpl;
+import org.apache.ignite.internal.processors.cache.CacheOperationContext;
 import org.apache.ignite.internal.processors.cache.CacheType;
 import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
 import org.apache.ignite.internal.processors.cache.GridCacheContext;
+import org.apache.ignite.internal.processors.cache.IgniteCacheProxyImpl;
+import org.apache.ignite.internal.processors.cache.IgniteInternalCache;
 import org.apache.ignite.internal.processors.cache.KeyCacheObject;
+import org.apache.ignite.internal.processors.cache.QueryCursorImpl;
 import org.apache.ignite.internal.processors.cache.binary.CacheObjectBinaryProcessorImpl;
 import org.apache.ignite.internal.processors.cache.dr.GridCacheDrExpirationInfo;
 import org.apache.ignite.internal.processors.cache.dr.GridCacheDrInfo;
+import org.apache.ignite.internal.processors.cache.query.CacheQuery;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersion;
 import org.apache.ignite.internal.processors.marshaller.MappedName;
 import org.apache.ignite.internal.processors.query.QueryEntityEx;
+import org.apache.ignite.internal.util.lang.GridCloseableIterator;
+import org.apache.ignite.internal.util.lang.IgniteOutClosureX;
 import org.apache.ignite.internal.util.typedef.internal.U;
 import org.apache.ignite.util.migration.api.IgniteToIgniteMigrationConfiguration;
 import org.apache.ignite.util.migration.api.MigrationCache;
@@ -64,8 +72,14 @@ import org.apache.ignite.util.migration.api.MigrationPartition;
 import org.apache.ignite.util.migration.api.MigrationSource;
 import org.apache.ignite.util.migration.api.MigrationTypeMapping;
 
+import static org.apache.ignite.internal.processors.cache.query.GridCacheQueryType.SCAN;
+import static org.apache.ignite.plugin.security.SecurityPermission.CACHE_READ;
+
 /** Client-node connection, usable as either endpoint. */
 public class ThickClientMigrationOrigin implements MigrationSource, MigrationDestination {
+    /** */
+    private static final String SQL_VIEW_KEY_PREFIX = "ignite.internal.sql.view.";
+
     /** */
     private final IgniteConfiguration cfg;
 
@@ -74,6 +88,9 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
 
     /** */
     private boolean closed;
+
+    /** */
+    private final Map<String, IgniteDataStreamer<Object, Object>> streamers = new ConcurrentHashMap<>();
 
     /** */
     private ThickClientMigrationOrigin(IgniteConfiguration cfg) {
@@ -99,7 +116,10 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
         }
     }
 
-    /** */
+    /**
+     * @param cfg Client node configuration.
+     * @return Migration endpoint.
+     */
     public static ThickClientMigrationOrigin create(IgniteConfiguration cfg) throws IgniteCheckedException {
         if (!Boolean.TRUE.equals(cfg.isClientMode()))
             throw new IgniteCheckedException("Migration requires a client-mode IgniteConfiguration");
@@ -114,11 +134,7 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
 
     /** {@inheritDoc} */
     @Override public Collection<BinaryMetadata> binaryMetadata() {
-        List<BinaryMetadata> res = new ArrayList<>();
-
-        ig.binary().types().forEach(type -> res.add(((BinaryTypeImpl)type).metadata()));
-
-        return res;
+        return ((CacheObjectBinaryProcessorImpl)ig.context().cacheObjects()).binaryMetadata();
     }
 
     /** {@inheritDoc} */
@@ -139,7 +155,7 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
         List<MigrationCache> res = new ArrayList<>();
 
         for (DynamicCacheDescriptor desc : ig.context().cache().cacheDescriptors().values()) {
-            if (desc.cacheType() != CacheType.USER)
+            if (desc.cacheType() != CacheType.USER && desc.cacheType() != CacheType.DATA_STRUCTURES)
                 continue;
 
             // The descriptor schema contains ALTER TABLE/CREATE INDEX changes absent from the original configuration.
@@ -168,7 +184,7 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
                 }
             }
 
-            res.add(new MigrationCache(cfg.getName(), cfg, desc.sql()));
+            res.add(new MigrationCache(cfg.getName(), cfg, desc.sql(), desc.cacheType()));
         }
 
         res.sort(Comparator.comparing(MigrationCache::sourceName));
@@ -179,10 +195,21 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
     /** {@inheritDoc} */
     @Override public Map<String, Serializable> metastorage(IgniteToIgniteMigrationConfiguration cfg)
         throws IgniteCheckedException {
+        return metastorage("", key -> !key.startsWith(SQL_VIEW_KEY_PREFIX) && cfg.getMetastorageFilter().test(key));
+    }
+
+    /** {@inheritDoc} */
+    @Override public Map<String, Serializable> sqlViews(IgniteToIgniteMigrationConfiguration cfg)
+        throws IgniteCheckedException {
+        return metastorage(SQL_VIEW_KEY_PREFIX, cfg.getMetastorageFilter());
+    }
+
+    /** */
+    private Map<String, Serializable> metastorage(String prefix, Predicate<String> filter) throws IgniteCheckedException {
         Map<String, Serializable> res = new LinkedHashMap<>();
 
-        ig.context().distributedMetastorage().iterate("", (key, val) -> {
-            if (cfg.getMetastorageFilter().test(key))
+        ig.context().distributedMetastorage().iterate(prefix, (key, val) -> {
+            if (filter.test(key))
                 res.put(key, (Serializable)val);
         });
 
@@ -222,12 +249,43 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
     }
 
     /** {@inheritDoc} */
+    @SuppressWarnings("unchecked")
     @Override public QueryCursor<MigrationEntry> read(MigrationPartition part, IgniteToIgniteMigrationConfiguration cfg) {
-        IgniteCache<Object, Object> cache = ig.cache(part.sourceCache()).withKeepBinary().withSkipStore()
-            .withExpiryPolicy(new EternalExpiryPolicy());
+        cache(part.sourceCache());
 
-        return cache.query(new ScanQuery<>().setPartition(part.partition()).setPageSize(cfg.getBatchSize()),
-            new MigrationEntryReader(part.sourceCache()));
+        GridCacheContext<Object, Object> ctx = ig.cachex(part.sourceCache()).context();
+
+        return new QueryCursorImpl<>(() -> {
+            CacheOperationContext prev = ctx.gate().enter(null);
+
+            try {
+                ctx.checkSecurity(CACHE_READ);
+
+                if (ctx.topology().lostPartitions().contains(part.partition()))
+                    throw new IgniteException("Source partition is lost: " + part.partition());
+
+                ClusterNode primary = ig.affinity(part.sourceCache()).mapPartitionToNode(part.partition());
+                CacheQuery<MigrationEntry> qry = ctx.queries().createScanQuery(null,
+                    new MigrationEntryReader(part.sourceCache()), part.partition(), true, false, null,
+                    Collections.emptySet());
+
+                qry.pageSize(cfg.getBatchSize());
+
+                // Public partition ScanQuery can select a backup. Route the same scan engine to the primary explicitly.
+                return ctx.kernalContext().query().executeQuery(SCAN, part.sourceCache(), ctx,
+                    new IgniteOutClosureX<GridCloseableIterator<MigrationEntry>>() {
+                        @Override public GridCloseableIterator<MigrationEntry> applyx() throws IgniteCheckedException {
+                            return ctx.queries().scanQueryDistributed(qry, Collections.singleton(primary));
+                        }
+                    }, true);
+            }
+            catch (IgniteCheckedException e) {
+                throw new IgniteException("Failed to scan source partition: " + part.sourceCache(), e);
+            }
+            finally {
+                ctx.gate().leave(prev);
+            }
+        });
     }
 
     /** {@inheritDoc} */
@@ -243,15 +301,29 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
     /** {@inheritDoc} */
     @Override public void cache(MigrationCache cache, IgniteToIgniteMigrationConfiguration cfg) {
         String name = cache.configuration().getName();
+        DynamicCacheDescriptor desc = ig.context().cache().cacheDescriptor(name);
+
+        if (desc != null && desc.cacheType() != cache.type())
+            throw new IgniteException("Destination cache type differs from source: " + name);
 
         if (cfg.isNoCacheCreate()) {
-            if (ig.cache(name) == null)
+            if (desc == null)
                 throw new IgniteException("Destination cache does not exist: " + name);
+
+            cache(name);
 
             return;
         }
 
-        boolean created = ig.getOrCreateCache0(cache.configuration(), cache.sql()).get2();
+        boolean created;
+
+        try {
+            created = ig.context().cache().dynamicStartCache(cache.configuration(), name, null, cache.type(),
+                cache.sql(), false, true, true).get();
+        }
+        catch (IgniteCheckedException e) {
+            throw new IgniteException("Failed to create destination cache: " + name, e);
+        }
 
         if (!created && !cfg.isCreateCacheIfNotExists())
             throw new CacheExistsException("Destination cache already exists: " + name);
@@ -263,12 +335,54 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
     }
 
     /** {@inheritDoc} */
+    @Override public void sqlView(String key, Serializable val) throws IgniteCheckedException {
+        ig.context().distributedMetastorage().write(key, val);
+    }
+
+    /** {@inheritDoc} */
     @Override public void write(String name, List<MigrationEntry> entries, IgniteToIgniteMigrationConfiguration cfg)
         throws IgniteCheckedException {
-        IgniteCache<Object, Object> cache = ig.cache(name).withKeepBinary().withSkipStore();
+        IgniteCache<Object, Object> cache = cache(name).withKeepBinary().withSkipStore();
+        IgniteInternalCache<Object, Object> internal = ig.cachex(name).keepBinary().withSkipStore();
+        GridCacheContext<Object, Object> ctx = internal.context();
+        boolean keepVer = !cfg.isSkipConflictVersion();
 
-        if (!cfg.isSkipCdcInfo()) {
-            GridCacheContext<Object, Object> ctx = ig.cachex(name).context();
+        if (cfg.isUseDataStreamer()) {
+            if (entries.stream().anyMatch(e -> keepVer && e.version() != null ||
+                !cfg.isSkipExpireTime() && e.expireTime() != 0)) {
+                throw new IgniteCheckedException("DataStreamer cannot preserve entry metadata. " +
+                    "Use --skip-conflict-version and --skip-expire-time, or disable DataStreamer.");
+            }
+
+            IgniteDataStreamer<Object, Object> streamer = streamers.computeIfAbsent(name, key -> {
+                IgniteDataStreamer<Object, Object> res = ig.dataStreamer(key);
+
+                try {
+                    res.skipStore(true);
+                    cfg.getDataStreamerConfiguration().accept(res);
+
+                    return res;
+                }
+                catch (RuntimeException e) {
+                    res.close(true);
+
+                    throw e;
+                }
+            });
+
+            for (MigrationEntry entry : entries)
+                streamer.addData(destinationKey(entry.key()), destinationValue(ctx, entry));
+
+            return;
+        }
+
+        if (keepVer && !ctx.conflictNeedResolve()) {
+            throw new IgniteCheckedException("Conflict resolution must be configured on the destination servers " +
+                "and client node to preserve conflict versions [cache=" + name +
+                "]. Use --skip-conflict-version to ignore source versions.");
+        }
+
+        if (keepVer || !cfg.isSkipExpireTime() && entries.stream().anyMatch(e -> e.expireTime() != 0)) {
             Map<KeyCacheObject, GridCacheDrInfo> batch = new LinkedHashMap<>();
 
             for (MigrationEntry entry : entries) {
@@ -277,39 +391,35 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
                 if (expire > 0 && expire <= System.currentTimeMillis())
                     continue;
 
-                GridCacheVersion ver = entry.version();
+                GridCacheVersion ver = keepVer ? entry.version() :
+                    ctx.versions().next(ctx.affinity().affinityTopologyVersion().topologyVersion());
 
                 if (ver == null)
                     throw new IgniteCheckedException("Missing source conflict version for cache: " + name);
 
-                if (ver.otherClusterVersion() != null)
-                    ver = (GridCacheVersion)ver.otherClusterVersion();
+                ver = ver.conflictVersion();
 
                 // Recalculate affinity: source and destination partition counts may differ.
                 Object key = destinationKey(entry.key());
                 KeyCacheObject cacheKey = ctx.toCacheKeyObject(key);
 
-                batch.put(cacheKey, expire == 0 ? new GridCacheDrInfo(ctx.toCacheObject(entry.value()), ver) :
-                    new GridCacheDrExpirationInfo(ctx.toCacheObject(entry.value()), ver, 0, expire));
+                Object val = destinationValue(ctx, entry);
+
+                batch.put(cacheKey, expire == 0 ? new GridCacheDrInfo(ctx.toCacheObject(val), ver) :
+                    new GridCacheDrExpirationInfo(ctx.toCacheObject(val), ver, 0, expire));
             }
 
             if (!batch.isEmpty())
-                ig.cachex(name).putAllConflict(batch);
+                internal.putAllConflict(batch);
         }
         else {
             Map<Object, Object> batch = new LinkedHashMap<>();
 
-            for (MigrationEntry entry : entries) {
-                long expire = cfg.isSkipExpireTime() ? 0 : entry.expireTime();
+            for (MigrationEntry entry : entries)
+                batch.put(destinationKey(entry.key()), destinationValue(ctx, entry));
 
-                if (expire > 0) {
-                    if (expire > System.currentTimeMillis())
-                        cache.withExpiryPolicy(new AbsoluteExpiryPolicy(expire))
-                            .put(destinationKey(entry.key()), entry.value());
-                }
-                else
-                    batch.put(destinationKey(entry.key()), entry.value());
-            }
+            if (!cfg.isSkipExpireTime())
+                cache = cache.withExpiryPolicy(new ModifiedExpiryPolicy(Duration.ETERNAL));
 
             if (batch.size() == 1) {
                 Map.Entry<Object, Object> entry = batch.entrySet().iterator().next();
@@ -327,8 +437,33 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
     }
 
     /** */
+    private Object destinationValue(GridCacheContext<?, ?> ctx, MigrationEntry entry) throws IgniteCheckedException {
+        return ctx.dataStructuresCache() ?
+            MigrationDataStructures.value(entry.value(), ig.context().discovery().gridStartTime()) : entry.value();
+    }
+
+    /** Opens user or data structure caches without exposing system caches through the public API. */
+    private IgniteCache<Object, Object> cache(String name) {
+        try {
+            ig.context().cache().getOrStartCache(name);
+
+            return ((IgniteCacheProxyImpl<Object, Object>)ig.context().cache().<Object, Object>jcache(name))
+                .gatewayWrapper();
+        }
+        catch (IgniteCheckedException e) {
+            throw new IgniteException("Failed to open migration cache: " + name, e);
+        }
+    }
+
+    /** */
     private BinaryContext binaryContext() {
         return ((CacheObjectBinaryProcessorImpl)ig.context().cacheObjects()).binaryContext();
+    }
+
+    /** {@inheritDoc} */
+    @Override public void finish() {
+        streamers.values().forEach(IgniteDataStreamer::close);
+        streamers.clear();
     }
 
     /** {@inheritDoc} */
@@ -336,37 +471,13 @@ public class ThickClientMigrationOrigin implements MigrationSource, MigrationDes
         if (!closed) {
             closed = true;
 
-            if (ig != null)
-                ig.close();
-        }
-    }
-
-    /** Computes remaining TTL on the destination server, rather than when a batch is enqueued. */
-    private static class AbsoluteExpiryPolicy implements ExpiryPolicy, Serializable {
-        /** */
-        private static final long serialVersionUID = 0L;
-
-        /** */
-        private final long expire;
-
-        /** */
-        AbsoluteExpiryPolicy(long expire) {
-            this.expire = expire;
-        }
-
-        /** {@inheritDoc} */
-        @Override public Duration getExpiryForCreation() {
-            return new Duration(TimeUnit.MILLISECONDS, Math.max(0, expire - System.currentTimeMillis()));
-        }
-
-        /** {@inheritDoc} */
-        @Override public Duration getExpiryForAccess() {
-            return null;
-        }
-
-        /** {@inheritDoc} */
-        @Override public Duration getExpiryForUpdate() {
-            return getExpiryForCreation();
+            try {
+                streamers.values().forEach(streamer -> streamer.close(true));
+            }
+            finally {
+                if (ig != null)
+                    ig.close();
+            }
         }
     }
 }

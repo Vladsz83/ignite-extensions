@@ -45,7 +45,7 @@ public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, O
     @IgniteInstanceResource
     private transient Ignite ignite;
 
-    /** */
+    /** @param cacheName Source cache name. */
     public MigrationEntryReader(String cacheName) {
         this.cacheName = cacheName;
     }

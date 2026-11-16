@@ -24,19 +24,44 @@ import org.apache.ignite.internal.binary.BinaryMetadata;
 
 /** Write side of the migration. The runner may invoke {@link #write} concurrently. */
 public interface MigrationDestination extends MigrationOrigin {
-    /** Registers a schema without changing its type ID. */
+    /** @param meta Binary metadata to register. */
     void binaryMetadata(BinaryMetadata meta);
 
-    /** Registers a mapping without changing its type ID. */
+    /** @param mapping Type mapping to register. */
     void typeMapping(MigrationTypeMapping mapping);
 
-    /** Creates or validates a destination cache before any records are written. */
+    /**
+     * Creates or validates a destination cache before any records are written.
+     *
+     * @param cache Cache definition.
+     * @param cfg Migration configuration.
+     */
     void cache(MigrationCache cache, IgniteToIgniteMigrationConfiguration cfg);
 
-    /** Writes a selected distributed metadata item. */
+    /**
+     * @param key Distributed metadata key.
+     * @param val Distributed metadata value.
+     */
     void metastorage(String key, Serializable val) throws IgniteCheckedException;
 
-    /** Writes one batch synchronously; failures must be propagated to the runner. */
+    /**
+     * @param key SQL view key.
+     * @param val SQL view definition.
+     */
+    void sqlView(String key, Serializable val) throws IgniteCheckedException;
+
+    /**
+     * Accepts one batch. Buffered destinations must acknowledge all pending writes in {@link #finish()}.
+     *
+     * @param cache Destination cache name.
+     * @param entries Entries to write.
+     * @param cfg Migration configuration.
+     */
     void write(String cache, List<MigrationEntry> entries, IgniteToIgniteMigrationConfiguration cfg)
         throws IgniteCheckedException;
+
+    /** Completes and acknowledges all buffered writes before the migration is reported as successful. */
+    default void finish() throws IgniteCheckedException {
+        // No-op.
+    }
 }

@@ -28,7 +28,11 @@ public class MigrationTypeMapping {
     /** */
     private final String name;
 
-    /** Creates a mapping. */
+    /**
+     * @param platformId Platform ID.
+     * @param typeId Type ID.
+     * @param name Class name.
+     */
     public MigrationTypeMapping(byte platformId, int typeId, String name) {
         this.platformId = platformId;
         this.typeId = typeId;

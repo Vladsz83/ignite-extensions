@@ -38,7 +38,12 @@ public class MigrationEntry implements Serializable {
     /** Original version, including the other-cluster version when present. */
     private final GridCacheVersion ver;
 
-    /** Creates a migration record. */
+    /**
+     * @param key Key.
+     * @param val Value.
+     * @param expireTime Expiration timestamp, or zero for an eternal entry.
+     * @param ver Source version.
+     */
     public MigrationEntry(Object key, Object val, long expireTime, GridCacheVersion ver) {
         this.key = Objects.requireNonNull(key, "key");
         this.val = Objects.requireNonNull(val, "value");

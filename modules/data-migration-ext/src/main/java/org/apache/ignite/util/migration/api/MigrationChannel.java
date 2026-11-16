@@ -17,20 +17,14 @@
 
 package org.apache.ignite.util.migration.api;
 
-/** Migration stages, in dependency order. */
-public enum MigrationChannelType {
-    /** Binary schemas. */
-    BINARY_METADATA,
+import org.apache.ignite.IgniteCheckedException;
 
-    /** Platform type ID to class name mappings. */
-    TYPE_MAPPINGS,
-
-    /** Cache and SQL table definitions. */
-    CACHE_CONFIGURATIONS,
-
-    /** Selected distributed metadata, after SQL schemas have been created. */
-    METASTORAGE,
-
-    /** Cache records. */
-    CACHE_DATA
+/**
+ * Transfers one kind of entity between connected endpoints. Channel instances belong to a single migration.
+ *
+ * @param <T> Transferred entity type.
+ */
+public interface MigrationChannel<T> {
+    /** Transfers entities, propagating failures to the migration runner. Does not close the endpoints. */
+    void transfer() throws IgniteCheckedException;
 }

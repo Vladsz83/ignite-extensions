@@ -48,13 +48,19 @@ public class IgniteToIgniteMigrationCommandLine {
     /** Boolean switches. */
     private static final Set<String> FLAGS = new HashSet<>(Arrays.asList(
         "no-cache-create", "create-cache-if-not-exists", "no-binary-metadata-create", "no-binary-metdata-create",
-        "no-mappings-create", "skip-expire-time", "skip-cdc-info"));
+        "no-mappings-create", "skip-expire-time", "skip-conflict-version", "use-data-streamer", "allow-overwrite"));
+
+    /** Data streamer settings. */
+    private static final Set<String> STREAMER_OPTIONS = new HashSet<>(Arrays.asList(
+        "allow-overwrite", "per-node-buffer-size", "per-node-parallel-operations", "per-thread-buffer-size",
+        "timeout", "auto-flush-frequency"));
 
     /** Options requiring a value. */
     private static final Set<String> VALUES = new HashSet<>(Arrays.asList(
         "src-client-node-config", "dest-client-node-config", "cache-group-names", "batch-size", "read-threads",
         "write-threads", "read-limit-in-sec", "write-limit-in-sec", "queue-capacity", "cache-config-transformer",
-        "cache-config-transformer-parameters", "destination"));
+        "cache-config-transformer-parameters", "destination", "move-data-structures", "per-node-buffer-size",
+        "per-node-parallel-operations", "per-thread-buffer-size", "timeout", "auto-flush-frequency"));
 
     /**
      * Main entry point.
@@ -64,10 +70,14 @@ public class IgniteToIgniteMigrationCommandLine {
         System.exit(run(args));
     }
 
-    /** @return Process exit code; exposed separately from {@code main} for embedded invocation. */
+    /**
+     * @param args Command line arguments.
+     * @return Process exit code.
+     */
     public static int run(String... args) {
         if (args.length == 1 && (isHelp(args[0]) || "--help".equals(args[0]))) {
             usage();
+
             return 0;
         }
 
@@ -84,6 +94,8 @@ public class IgniteToIgniteMigrationCommandLine {
                 IgniteConfiguration srcCfg = nodeConfiguration(srcCtx, "source");
                 IgniteConfiguration destCfg = destCtx == null ? null : nodeConfiguration(destCtx, "destination");
 
+                cfg.setLogger(U.initLogger(srcCfg, "data-migration"));
+
                 configureTransformer(options, cfg, destCfg);
 
                 MigrationDestination dest = destCfg == null ?
@@ -98,6 +110,7 @@ public class IgniteToIgniteMigrationCommandLine {
         catch (Exception e) {
             X.error("Data migration failed: " + e.getMessage());
             e.printStackTrace(System.err);
+
             return 1;
         }
     }
@@ -152,7 +165,8 @@ public class IgniteToIgniteMigrationCommandLine {
             .setNoBinaryMetadataCreate(options.containsKey("no-binary-metadata-create") || options.containsKey("no-binary-metdata-create"))
             .setNoMappingsCreate(options.containsKey("no-mappings-create"))
             .setSkipExpireTime(options.containsKey("skip-expire-time"))
-            .setSkipCdcInfo(options.containsKey("skip-cdc-info"))
+            .setSkipConflictVersion(options.containsKey("skip-conflict-version"))
+            .setMoveDataStructures(bool(options, "move-data-structures", true))
             .setBatchSize(integer(options, "batch-size", 1))
             .setReadThreads(integer(options, "read-threads", 1))
             .setWriteThreads(integer(options, "write-threads", 1))
@@ -163,7 +177,55 @@ public class IgniteToIgniteMigrationCommandLine {
         if (options.containsKey("cache-group-names"))
             cfg.setCacheGroupNames(options.get("cache-group-names").split(",", -1));
 
+        configureDataStreamer(options, cfg);
+
         return cfg;
+    }
+
+    /** */
+    private static void configureDataStreamer(Map<String, String> options, IgniteToIgniteMigrationConfiguration cfg) {
+        if (!options.containsKey("use-data-streamer")) {
+            if (STREAMER_OPTIONS.stream().anyMatch(options::containsKey))
+                throw new IllegalArgumentException("DataStreamer settings require --use-data-streamer");
+
+            return;
+        }
+
+        if (!options.containsKey("dest-client-node-config"))
+            throw new IllegalArgumentException("DataStreamer requires --dest-client-node-config");
+
+        Map<String, Integer> values = new HashMap<>();
+
+        for (String name : STREAMER_OPTIONS) {
+            if (!"allow-overwrite".equals(name) && options.containsKey(name)) {
+                int val = integer(options, name, 0);
+                int min = "timeout".equals(name) ? -1 : "auto-flush-frequency".equals(name) ? 0 : 1;
+
+                if (val < min)
+                    throw new IllegalArgumentException("Invalid DataStreamer setting: --" + name);
+
+                values.put(name, val);
+            }
+        }
+
+        cfg.setUseDataStreamer(true).setDataStreamerConfiguration(streamer -> {
+            streamer.allowOverwrite(options.containsKey("allow-overwrite"));
+
+            if (values.containsKey("per-node-buffer-size"))
+                streamer.perNodeBufferSize(values.get("per-node-buffer-size"));
+
+            if (values.containsKey("per-node-parallel-operations"))
+                streamer.perNodeParallelOperations(values.get("per-node-parallel-operations"));
+
+            if (values.containsKey("per-thread-buffer-size"))
+                streamer.perThreadBufferSize(values.get("per-thread-buffer-size"));
+
+            if (values.containsKey("timeout"))
+                streamer.timeout(values.get("timeout"));
+
+            if (values.containsKey("auto-flush-frequency"))
+                streamer.autoFlushFrequency(values.get("auto-flush-frequency"));
+        });
     }
 
     /** */
@@ -177,16 +239,31 @@ public class IgniteToIgniteMigrationCommandLine {
     }
 
     /** */
+    private static boolean bool(Map<String, String> options, String name, boolean dflt) {
+        String val = options.get(name);
+
+        if (val == null)
+            return dflt;
+
+        if (!"true".equalsIgnoreCase(val) && !"false".equalsIgnoreCase(val))
+            throw new IllegalArgumentException("Expected true or false for --" + name);
+
+        return Boolean.parseBoolean(val);
+    }
+
+    /** */
     private static GenericApplicationContext context(String path) throws Exception {
         GenericApplicationContext ctx = new GenericApplicationContext();
 
         try {
             new XmlBeanDefinitionReader(ctx).loadBeanDefinitions(new UrlResource(U.resolveSpringUrl(path)));
             ctx.refresh();
+
             return ctx;
         }
         catch (Exception e) {
             ctx.close();
+
             throw e;
         }
     }
@@ -245,7 +322,10 @@ public class IgniteToIgniteMigrationCommandLine {
             "Options: --cache-group-names group1,group2 --batch-size N --read-threads N --write-threads N",
             "         --read-limit-in-sec N --write-limit-in-sec N --queue-capacity N",
             "         --no-cache-create | --create-cache-if-not-exists",
-            "         --no-binary-metadata-create --no-mappings-create --skip-expire-time --skip-cdc-info",
+            "         --no-binary-metadata-create --no-mappings-create --skip-expire-time --skip-conflict-version",
+            "         --move-data-structures true|false",
+            "         --use-data-streamer [--allow-overwrite] [--per-node-buffer-size N]",
+            "         --per-node-parallel-operations N --per-thread-buffer-size N --timeout N --auto-flush-frequency N",
             "         --cache-config-transformer FQN [--cache-config-transformer-parameters key=value,...]",
             "         --destination FQN (custom MigrationDestination instead of --dest-client-node-config)",
             "         --help");
