@@ -22,24 +22,24 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.Random;
+import java.util.UUID;
 import org.apache.ignite.Ignite;
+import org.apache.ignite.cache.store.jdbc.model.Person;
 import org.apache.ignite.configuration.DataRegionConfiguration;
 import org.apache.ignite.configuration.DataStorageConfiguration;
 import org.apache.ignite.configuration.IgniteConfiguration;
-import org.apache.ignite.internal.util.typedef.G;
 import org.apache.ignite.internal.util.typedef.internal.U;
 import org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi;
 import org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi;
 import org.apache.ignite.spi.discovery.tcp.ipfinder.TcpDiscoveryIpFinderAdapter;
 import org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder;
 import org.apache.ignite.testframework.junits.common.GridCommonAbstractTest;
-import org.apache.ignite.util.migration.api.MigrationDestination;
-import org.apache.ignite.util.migration.api.MigrationSource;
-import org.apache.ignite.util.migration.impl.ThickClientMigrationOrigin;
+import org.apache.ignite.util.migration.api.IgniteToIgniteMigrationConfiguration;
+import org.jetbrains.annotations.Nullable;
 import org.junit.Test;
 
 import static java.nio.file.Files.newDirectoryStream;
-import static org.apache.ignite.testframework.GridTestUtils.waitForCondition;
 
 /** */
 public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
@@ -121,20 +121,28 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
     public void test0() throws Exception {
         startClusters();
 
-        ThickClientMigrationOrigin mDest = ThickClientMigrationOrigin.create(getConfiguration("sender").setClientMode(true));
+        IgniteConfiguration destCfg = getConfiguration("sender").setClientMode(true);
 
         discPort = TcpDiscoverySpi.DFLT_PORT;
         commPort = TcpCommunicationSpi.DFLT_PORT;
 
-        ThickClientMigrationOrigin mSrc = ThickClientMigrationOrigin.create(getConfiguration("reader").setClientMode(true));
+        gridSrc.createCache(DEFAULT_CACHE_NAME);
 
-        mSrc.connect();
+        for (int i = 0; i < 100; i++)
+            gridSrc.cache(DEFAULT_CACHE_NAME).put(i, i);
 
-        IgniteToIgniteMigration.start(mSrc, mDest);
+        for (int i = 100; i < 200; i++) {
+            gridSrc.cache(DEFAULT_CACHE_NAME).put(
+                String.valueOf(i),
+                new CustomData(i, "str" + i, UUID.randomUUID(), UUID.randomUUID().toString().getBytes())
+            );
+        }
 
+        IgniteConfiguration srcCfg = getConfiguration("reader").setClientMode(true);
 
-        //MigrationSource mSrc = IgniteToIgniteMigration.source(srcConnectionCfg);
+        IgniteToIgniteMigrationConfiguration mCfg = new IgniteToIgniteMigrationConfiguration(srcCfg, destCfg);
 
+        new IgniteToIgniteMigration(mCfg).start();
     }
 
     /** */
@@ -152,5 +160,28 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         assertEquals(NODES_PER_CLUSTER, gridDest.cluster().nodes().size());
         assertTrue(null == gridSrc.cluster().node(gridDest.cluster().id()));
         assertTrue(null == gridDest.cluster().node(gridSrc.cluster().id()));
+    }
+
+    /** */
+    private static class CustomData {
+        /** */
+        int iVal;
+
+        /** */
+        String sVal;
+
+        /** */
+        UUID uuid;
+
+        /** */
+        byte[] bArr;
+
+        /** */
+        public CustomData(int iVal, String sVal, UUID uuid, byte[] bArr) {
+            this.iVal = iVal;
+            this.sVal = sVal;
+            this.uuid = uuid;
+            this.bArr = bArr;
+        }
     }
 }

@@ -17,6 +17,10 @@
 
 package org.apache.ignite.util.migration.api;
 
+import org.apache.ignite.lang.IgniteFuture;
+
 /** */
 public interface MigrationChannel {
+    /** */
+    IgniteFuture<?> migrate(MigrationSource src, MigrationDestination dest);
 }

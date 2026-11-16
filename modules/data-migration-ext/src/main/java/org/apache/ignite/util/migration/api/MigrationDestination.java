@@ -17,6 +17,10 @@
 
 package org.apache.ignite.util.migration.api;
 
+import org.apache.ignite.internal.binary.BinaryMetadata;
+
 /** */
 public interface MigrationDestination extends MigrationOrigin {
+    /** */
+    void accept(BinaryMetadata binaryMetadata);
 }

@@ -19,8 +19,10 @@ package org.apache.ignite.util.migration.api;
 
 import java.io.Closeable;
 import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.internal.binary.BinaryMetadata;
 
 /** */
 public interface MigrationOrigin extends Closeable {
+    /** */
     void connect() throws IgniteCheckedException;
 }

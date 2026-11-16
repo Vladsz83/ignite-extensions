@@ -21,12 +21,14 @@ import org.apache.ignite.Ignite;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.Ignition;
 import org.apache.ignite.configuration.IgniteConfiguration;
+import org.apache.ignite.internal.IgniteEx;
+import org.apache.ignite.internal.binary.BinaryContext;
 import org.apache.ignite.internal.util.typedef.X;
 import org.apache.ignite.util.migration.api.MigrationOrigin;
 import org.jetbrains.annotations.Nullable;
 
 /** */
-public class ThickClientMigrationOrigin implements MigrationOrigin {
+abstract class AbstractClientMigrationOrigin implements MigrationOrigin {
     /** */
     private static final String ERR_TPL = "Failed to %s the thin client [err='%s'].";
 
@@ -34,13 +36,13 @@ public class ThickClientMigrationOrigin implements MigrationOrigin {
     private final IgniteConfiguration cfg;
 
     /** */
-    private Ignite ig;
+    protected IgniteEx ignite;
 
     /** */
     private boolean closed;
 
     /** */
-    private ThickClientMigrationOrigin(IgniteConfiguration cfg) {
+    AbstractClientMigrationOrigin(IgniteConfiguration cfg) {
         this.cfg = cfg;
     }
 
@@ -50,18 +52,10 @@ public class ThickClientMigrationOrigin implements MigrationOrigin {
             throw err("start", "already closed", null);
 
         try {
-            ig = Ignition.start(cfg);
+            ignite = (IgniteEx)Ignition.start(cfg);
         } catch (Throwable t){
             throw err("start", X.cause(t, null).getMessage(), t);
         }
-    }
-
-    /** */
-    public static ThickClientMigrationOrigin create(IgniteConfiguration cfg) throws IgniteCheckedException {
-        if (!cfg.isClientMode())
-            throw err("create", "the configuration is not a client", null);
-
-        return new ThickClientMigrationOrigin(cfg);
     }
 
     /** */
@@ -69,13 +63,18 @@ public class ThickClientMigrationOrigin implements MigrationOrigin {
         return new IgniteCheckedException(ERR_TPL.formatted(action, reason), cause);
     }
 
+    /** */
+    protected BinaryContext binaryContext() {
+        return ignite.context().cacheObjects().binaryContext();
+    }
+
     /** {@inheritDoc} */
     @Override public synchronized void close() {
         if (!closed) {
             closed = true;
 
-            if (ig != null)
-                ig.close();
+            if (ignite != null)
+                ignite.close();
         }
     }
 }

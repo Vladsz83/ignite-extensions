@@ -17,6 +17,12 @@
 
 package org.apache.ignite.util.migration.api;
 
+import java.util.Iterator;
+import org.apache.ignite.internal.binary.BinaryMetadata;
+
 /** */
 public interface MigrationSource extends MigrationOrigin {
+    /** @return Binary schemas. */
+    Iterator<BinaryMetadata> binaryMetadata();
+
 }

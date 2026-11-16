@@ -17,7 +17,30 @@
 
 package org.apache.ignite.util.migration.api;
 
+import org.apache.ignite.configuration.IgniteConfiguration;
+import org.jetbrains.annotations.Nullable;
+
 /** */
 public class IgniteToIgniteMigrationConfiguration {
+    /** Configuration of the thick client to the source cluster. */
+    private @Nullable IgniteConfiguration srcClientCfg;
 
+    /** Configuration of the thick client to the destination cluster. */
+    private @Nullable IgniteConfiguration destClientCfg;
+
+    /** Creates migration configuration base on 2 clients. */
+    public IgniteToIgniteMigrationConfiguration(IgniteConfiguration srcClientCfg,  IgniteConfiguration destClientCfg) {
+        this.srcClientCfg = srcClientCfg;
+        this.destClientCfg = destClientCfg;
+    }
+
+    /** */
+    public @Nullable IgniteConfiguration sourceClientConfiguration() {
+        return srcClientCfg;
+    }
+
+    /** */
+    public @Nullable IgniteConfiguration destinationClientConfiguration() {
+        return destClientCfg;
+    }
 }
