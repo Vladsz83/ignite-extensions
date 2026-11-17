@@ -19,14 +19,15 @@ package org.apache.ignite.util.migration;
 
 import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.BiFunction;
 import org.apache.ignite.IgniteCache;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteLock;
@@ -55,20 +56,16 @@ import org.apache.ignite.internal.processors.cache.version.CacheVersionConflictR
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersion;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersionConflictContext;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersionedEntryEx;
+import org.apache.ignite.internal.processors.cluster.ClusterIdAndTag;
 import org.apache.ignite.plugin.AbstractTestPluginProvider;
 import org.apache.ignite.plugin.PluginContext;
 import org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi;
 import org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder;
 import org.apache.ignite.testframework.junits.common.GridCommonAbstractTest;
-import org.apache.ignite.util.migration.api.CacheConfigTransformer;
-import org.apache.ignite.util.migration.api.IgniteToIgniteMigrationConfiguration;
-import org.apache.ignite.util.migration.api.MigrationEntry;
-import org.apache.ignite.util.migration.impl.ThickClientMigrationOrigin;
-import org.apache.ignite.util.migration.impl.channel.BinaryMetadataMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.CacheConfigurationsMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.CacheDataMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.MetastorageMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.TypeMappingsMigrationChannel;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsMigrationChannel;
+import org.apache.ignite.util.migration.category.metastorage.MetastorageKeyFilterTransformer;
+import org.apache.ignite.util.migration.category.metastorage.MetastorageMigrationChannel;
+import org.apache.ignite.util.migration.endpoint.ThickClientMigrationEndpoint;
 import org.junit.Test;
 
 import static org.apache.ignite.events.EventType.EVT_CACHE_QUERY_OBJECT_READ;
@@ -153,7 +150,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         strings.put("first", "hello");
         strings.put("second", "world");
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true));
+        IgniteToIgniteMigrationConfiguration simple = new IgniteToIgniteMigrationConfiguration();
+        simple.cacheData().skipConflictVersion(true);
+        migrate(simple);
 
         IgniteCache<Integer, Object> mixedCopy = dest.cache("mixed");
 
@@ -191,9 +190,11 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             }
         }
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setBatchSize(7).setReadThreads(3).setWriteThreads(2)
-            .setQueueCapacity(1).setCacheConfigurationTransformer(cfg -> cfg.setName("copy-" + cfg.getName())
-                .setBackups(0).setAffinity(new RendezvousAffinityFunction(false, 32))));
+        IgniteToIgniteMigrationConfiguration bin = new IgniteToIgniteMigrationConfiguration();
+        bin.cacheData().batchSize(7).readThreads(3).writeThreads(2).queueCapacity(1);
+        bin.cacheSelection().cacheConfigurationTransformer(cfg -> cfg.setName("copy-" + cfg.getName())
+            .setBackups(0).setAffinity(new RendezvousAffinityFunction(false, 32)));
+        migrate(bin);
 
         for (CacheAtomicityMode mode : CacheAtomicityMode.values()) {
             String name = "records-" + mode;
@@ -235,34 +236,93 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             .setAffinity(new RendezvousAffinityFunction(false, 16))).put(3, "retain");
 
         assertThrows(log, () -> {
-            migrate(new IgniteToIgniteMigrationConfiguration().setCacheGroupNames("included"));
+            IgniteToIgniteMigrationConfiguration grps = new IgniteToIgniteMigrationConfiguration();
+            grps.cacheSelection().cacheGroupNames("included");
+            migrate(grps);
             return null;
         }, CacheExistsException.class, "Destination cache already exists");
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setCacheGroupNames("included")
-            .setNoCacheCreate(true).setSkipConflictVersion(true).setBatchSize(2));
+        IgniteToIgniteMigrationConfiguration grps2 = new IgniteToIgniteMigrationConfiguration();
+        grps2.cacheSelection().cacheGroupNames("included");
+        grps2.cacheConfigurations().noCacheCreate(true);
+        grps2.cacheData().skipConflictVersion(true).batchSize(2);
+        migrate(grps2);
 
         assertEquals("source", dest.cache("selected").get(1));
         assertEquals("retain", dest.cache("selected").get(3));
         assertNull(dest.cache("excluded"));
     }
 
-    /** Distributed metadata is allowlisted; the destination cluster identity remains distinct. */
+    /** All distributed metastorage is copied to the destination; cluster identity remains distinct. */
     @Test
-    public void testMetastorageFilter() throws Exception {
+    public void testMetastorage() throws Exception {
         startClusters();
 
-        src.context().distributedMetastorage().write("migration.allowed", "value");
-        src.context().distributedMetastorage().write("migration.private", "private");
+        src.context().distributedMetastorage().write("migration.first", "value");
+        src.context().distributedMetastorage().write("migration.second", "other");
+        src.context().distributedMetastorage().write("ignite.internal.graceful.shutdown",
+            new HashSet<>(Collections.singleton(src.localNode().id())));
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setMetastorageFilter("migration.allowed"::equals));
+        migrate(new IgniteToIgniteMigrationConfiguration());
 
-        assertEquals("value", dest.context().distributedMetastorage().read("migration.allowed"));
-        assertNull(dest.context().distributedMetastorage().read("migration.private"));
+        assertEquals("value", dest.context().distributedMetastorage().read("migration.first"));
+        assertEquals("other", dest.context().distributedMetastorage().read("migration.second"));
         assertFalse(src.cluster().id().equals(dest.cluster().id()));
+
+        // The source cluster identity must not reach the destination: destination nodes adopt the
+        // cluster ID from this key on startup, so copying it would rename the destination cluster
+        // after a restart.
+        ClusterIdAndTag destIdentity = dest.context().distributedMetastorage().read("ignite.internal.cluster.id.tag");
+
+        assertEquals(dest.cluster().id(), destIdentity.id());
+
+        // Graceful-stop coordination holds source node ids that are not valid on the destination.
+        assertNull(dest.context().distributedMetastorage().read("ignite.internal.graceful.shutdown"));
     }
 
-    /** Each channel applies its typed transformer, and later channels use the selected destination cache names. */
+    /** Disabling the default key filter copies the non-portable entries. */
+    @Test
+    public void testIgnoreDefaultFilter() throws Exception {
+        startClusters();
+
+        src.context().distributedMetastorage().write("migration.first", "value");
+        src.context().distributedMetastorage().write("ignite.internal.graceful.shutdown",
+            new HashSet<>(Collections.singleton(src.localNode().id())));
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.metastorage().ignoreDefaultFilter(true);
+        migrate(cfg);
+
+        assertEquals("value", dest.context().distributedMetastorage().read("migration.first"));
+
+        ClusterIdAndTag destIdentity = dest.context().distributedMetastorage().read("ignite.internal.cluster.id.tag");
+
+        assertEquals(src.cluster().id(), destIdentity.id());
+        assertEquals(Collections.singleton(src.localNode().id()),
+            dest.context().distributedMetastorage().read("ignite.internal.graceful.shutdown"));
+    }
+
+    /** Configured key filters skip entries by name and prefix, case-insensitively. */
+    @Test
+    public void testMetastorageKeyFilters() throws Exception {
+        startClusters();
+
+        src.context().distributedMetastorage().write("migration.keep", "value");
+        src.context().distributedMetastorage().write("secret.password", "pwd");
+        src.context().distributedMetastorage().write("Config.SkipMe", "v");
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.metastorage().filter(new MetastorageKeyFilterTransformer(
+            Collections.singleton("SECRET.Password"),
+            Collections.singletonList("config.")));
+        migrate(cfg);
+
+        assertEquals("value", dest.context().distributedMetastorage().read("migration.keep"));
+        assertNull(dest.context().distributedMetastorage().read("secret.password"));
+        assertNull(dest.context().distributedMetastorage().read("Config.SkipMe"));
+    }
+
+    /** Cache-config and metastorage channels apply their typed transformers; later channels use the selected names. */
     @Test
     public void testChannelTransformers() throws Exception {
         startClusters();
@@ -276,49 +336,32 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         src.createCache(new CacheConfiguration<>("excluded").setAffinity(new RendezvousAffinityFunction(false, 8)));
         src.context().distributedMetastorage().write("channel.setting", "source");
 
-        AtomicBoolean metaTransferred = new AtomicBoolean();
-        AtomicBoolean mappingTransferred = new AtomicBoolean();
         AtomicInteger cacheSelections = new AtomicInteger();
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true)
-            .setMetastorageFilter("channel.setting"::equals)
-            .setTransformer(BinaryMetadataMigrationChannel.class, meta -> {
-                if ("ChannelValue".equals(meta.typeName()))
-                    metaTransferred.set(true);
+        IgniteToIgniteMigrationConfiguration tr = new IgniteToIgniteMigrationConfiguration();
+        tr.cacheData().skipConflictVersion(true);
+        tr.transformer(CacheConfigurationsMigrationChannel.class, cfg -> {
+            cacheSelections.incrementAndGet();
 
-                return meta;
-            })
-            .setTransformer(TypeMappingsMigrationChannel.class, mapping -> {
-                if ("ChannelValue".equals(mapping.typeName()))
-                    mappingTransferred.set(true);
+            if ("excluded".equals(cfg.sourceName()))
+                return null;
 
-                return mapping;
-            })
-            .setTransformer(CacheConfigurationsMigrationChannel.class, cfg -> {
-                cacheSelections.incrementAndGet();
+            cfg.configuration().setName("copy-" + cfg.sourceName());
 
-                if ("excluded".equals(cfg.sourceName()))
-                    return null;
-
-                cfg.configuration().setName("copy-" + cfg.sourceName());
-
-                return cfg;
-            })
-            .setTransformer(MetastorageMigrationChannel.class,
-                entry -> new SimpleImmutableEntry<>(entry.getKey(), "transformed"))
-            .setTransformer(CacheDataMigrationChannel.class, entry -> Integer.valueOf(1).equals(entry.key()) ?
-                new MigrationEntry(101, entry.value(), entry.expireTime(), entry.version()) : null));
+            return cfg;
+        }).transformer(MetastorageMigrationChannel.class,
+            entry -> "channel.setting".equals(entry.getKey())
+                ? new SimpleImmutableEntry<>(entry.getKey(), "transformed")
+                : entry);
+        migrate(tr);
 
         IgniteCache<Object, Object> copy = dest.cache("copy-channel").withKeepBinary();
 
-        assertTrue(metaTransferred.get());
-        assertTrue(mappingTransferred.get());
         assertEquals(2, cacheSelections.get());
-        assertEquals(1, copy.size());
-        assertEquals("payload", ((BinaryObject)copy.get(101)).field("value"));
+        assertEquals(2, copy.size());
+        assertEquals("payload", ((BinaryObject)copy.get(1)).field("value"));
         assertNull(dest.cache("excluded"));
         assertEquals("transformed", dest.context().distributedMetastorage().read("channel.setting"));
-        assertEquals(2, src.cache("channel").size());
     }
 
     /** Expiration timestamps do not turn into a relative TTL when source versions are skipped. */
@@ -343,7 +386,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             }
         }
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true).setBatchSize(3));
+        IgniteToIgniteMigrationConfiguration exp = new IgniteToIgniteMigrationConfiguration();
+        exp.cacheData().skipConflictVersion(true).batchSize(3);
+        migrate(exp);
 
         for (CacheAtomicityMode mode : CacheAtomicityMode.values()) {
             String name = "expiry-" + mode;
@@ -391,8 +436,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         queue.add("first");
         queue.add("second");
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true).setSkipExpireTime(true)
-            .setBatchSize(10).setUseDataStreamer(streamer));
+        IgniteToIgniteMigrationConfiguration ds = new IgniteToIgniteMigrationConfiguration();
+        ds.cacheData().skipConflictVersion(true).skipExpireTime(true).batchSize(10).useDataStreamer(streamer);
+        migrate(ds);
 
         assertEquals(42, dest.atomicLong("counter", 0, false).get());
         assertTrue(dest.atomicSequence("sequence", 0, false).get() >= 100);
@@ -424,7 +470,10 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         sql(src, "INSERT INTO MIGRATION_TEST VALUES (1, 'Alice', 30)");
         sql(src, "CREATE VIEW MIGRATION_VIEW AS SELECT ID, AGE FROM MIGRATION_TEST");
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true).setBatchSize(3));
+        IgniteToIgniteMigrationConfiguration sqlCfg = new IgniteToIgniteMigrationConfiguration();
+        sqlCfg.cacheData().skipConflictVersion(true).batchSize(3);
+        sqlCfg.metastorage().ignoreDefaultFilter(true);
+        migrate(sqlCfg);
 
         assertEquals(sql(src, "SELECT ID, NAME, AGE FROM MIGRATION_TEST"),
             sql(dest, "SELECT ID, NAME, AGE FROM MIGRATION_TEST"));
@@ -464,7 +513,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             }, EVT_CACHE_QUERY_OBJECT_READ);
         }
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true).setBatchSize(4).setReadThreads(2));
+        IgniteToIgniteMigrationConfiguration routing = new IgniteToIgniteMigrationConfiguration();
+        routing.cacheData().skipConflictVersion(true).batchSize(4).readThreads(2);
+        migrate(routing);
 
         assertTrue(nonPrimary.toString(), nonPrimary.isEmpty());
         assertTrue(reads[0].get() > 0);
@@ -501,13 +552,15 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         for (int key = 0; key < 150; key++)
             cache.put(key, "value-" + key);
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setUseDataStreamer(true).setSkipConflictVersion(true)
-            .setSkipExpireTime(true).setWriteThreads(2).setReadThreads(2).setBatchSize(3).setQueueCapacity(1)
-            .setDataStreamerConfiguration(streamer -> {
+        IgniteToIgniteMigrationConfiguration strm = new IgniteToIgniteMigrationConfiguration();
+        strm.cacheData().useDataStreamer(true).skipConflictVersion(true)
+            .skipExpireTime(true).writeThreads(2).readThreads(2).batchSize(3).queueCapacity(1)
+            .dataStreamerConfiguration(streamer -> {
                 streamer.allowOverwrite(true);
                 streamer.perNodeBufferSize(7);
                 streamer.perThreadBufferSize(2);
-            }));
+            });
+        migrate(strm);
 
         assertEquals(150, dest.cache("streamer").size());
 
@@ -523,11 +576,14 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         src.createCache(new CacheConfiguration<Integer, String>("streamer")
             .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "value");
 
+        IgniteToIgniteMigrationConfiguration strm2 = new IgniteToIgniteMigrationConfiguration();
+        strm2.cacheData().useDataStreamer(true);
+
         Throwable err = assertThrows(log, () -> {
-            migrate(new IgniteToIgniteMigrationConfiguration().setUseDataStreamer(true));
+            migrate(strm2);
 
             return null;
-        }, IgniteCheckedException.class, "Migration worker failed");
+        }, IgniteCheckedException.class, "Migration worker failed.");
 
         assertTrue(err.getCause().getMessage().contains("DataStreamer cannot preserve entry metadata"));
     }
@@ -545,7 +601,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             migrate(new IgniteToIgniteMigrationConfiguration());
 
             return null;
-        }, IgniteCheckedException.class, "Migration worker failed");
+        }, IgniteCheckedException.class, "Migration worker failed.");
 
         assertTrue(err.getCause().getMessage().contains("Conflict resolution must be configured"));
         assertEquals(0, dest.cache("versions").size());
@@ -558,17 +614,17 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         assertThrows(log, () -> {
             IgniteToIgniteMigration.start(
-                ThickClientMigrationOrigin.create(getConfiguration("source-reader").setClientMode(true)),
-                ThickClientMigrationOrigin.create(getConfiguration("source-writer").setClientMode(true)),
-                new IgniteToIgniteMigrationConfiguration().setLogger(log));
+                ThickClientMigrationEndpoint.create(getConfiguration("source-reader").setClientMode(true)),
+                ThickClientMigrationEndpoint.create(getConfiguration("source-writer").setClientMode(true)),
+                new IgniteToIgniteMigrationConfiguration().logger(log));
 
             return null;
-        }, IgniteCheckedException.class, "Source and destination must be different clusters");
+        }, IgniteCheckedException.class, "Source and destination must be different clusters.");
 
         assertEquals(2, src.cluster().nodes().size());
     }
 
-    /** Group filtering must not install views referencing an excluded table. */
+    /** Group filtering migrates selected data; metastorage views are copied with the default filter disabled. */
     @Test
     public void testPartialSqlMigration() throws Exception {
         startClusters();
@@ -578,10 +634,43 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         sql(src, "CREATE VIEW EXCLUDED_VIEW AS SELECT ID FROM EXCLUDED");
         sql(src, "INSERT INTO INCLUDED VALUES (1, 'value')");
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true).setCacheGroupNames("selected"));
+        IgniteToIgniteMigrationConfiguration ps = new IgniteToIgniteMigrationConfiguration();
+        ps.cacheData().skipConflictVersion(true);
+        ps.cacheSelection().cacheGroupNames("selected");
+        ps.metastorage().ignoreDefaultFilter(true);
+        migrate(ps);
 
         assertEquals(sql(src, "SELECT ID FROM INCLUDED"), sql(dest, "SELECT ID FROM INCLUDED"));
 
+        // Views are not portable by default (the schema may be absent on the destination) and are
+        // skipped by the default filter. Disabling the filter copies them as-is: a view referencing
+        // a table that was not migrated is registered only if its schema exists, otherwise it is
+        // silently dropped and does not fail the migration.
+        AtomicInteger views = new AtomicInteger();
+
+        dest.context().distributedMetastorage().iterate("ignite.internal.sql.view.", (key, val) -> views.incrementAndGet());
+
+        assertEquals(1, views.get());
+    }
+
+    /** A view is not portable by default and is skipped by the default filter; migration does not fail. */
+    @Test
+    public void testViewWithoutSchemaDoesNotFail() throws Exception {
+        startClusters();
+
+        sql(src, "CREATE TABLE ORPHANED (ID INT PRIMARY KEY, VAL VARCHAR) WITH \"CACHE_GROUP=selected\"");
+        sql(src, "CREATE VIEW ORPHANED_VIEW AS SELECT ID FROM ORPHANED");
+
+        // Select a group that has no caches, so the destination receives no SQL tables or schema.
+        IgniteToIgniteMigrationConfiguration os = new IgniteToIgniteMigrationConfiguration();
+        os.cacheData().skipConflictVersion(true);
+        os.cacheSelection().cacheGroupNames("empty-group");
+        migrate(os);
+
+        // The SQL table (and its PUBLIC schema) was not migrated.
+        assertNull(dest.cache("ORPHANED"));
+
+        // The default filter skipped the view record.
         AtomicInteger views = new AtomicInteger();
 
         dest.context().distributedMetastorage().iterate("ignite.internal.sql.view.", (key, val) -> views.incrementAndGet());
@@ -598,7 +687,10 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         src.createCache(new CacheConfiguration<Integer, String>("user-cache")
             .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "value");
 
-        migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true).setMoveDataStructures(false));
+        IgniteToIgniteMigrationConfiguration sd = new IgniteToIgniteMigrationConfiguration();
+        sd.cacheData().skipConflictVersion(true);
+        sd.cacheSelection().moveDataStructures(false);
+        migrate(sd);
 
         assertEquals("value", dest.cache("user-cache").get(1));
         assertNull(dest.atomicLong("counter", 0, false));
@@ -613,12 +705,15 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         lock.lock();
 
+        IgniteToIgniteMigrationConfiguration lockCfg = new IgniteToIgniteMigrationConfiguration();
+        lockCfg.cacheData().skipConflictVersion(true);
+
         try {
             Throwable err = assertThrows(log, () -> {
-                migrate(new IgniteToIgniteMigrationConfiguration().setSkipConflictVersion(true));
+                migrate(lockCfg);
 
                 return null;
-            }, IgniteCheckedException.class, "Migration worker failed");
+            }, IgniteCheckedException.class, "Migration worker failed.");
 
             assertTrue(err.getCause().getMessage().contains("Cannot migrate a lock with an owner"));
         }
@@ -646,9 +741,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
     /** */
     private void migrate(IgniteToIgniteMigrationConfiguration cfg) throws Exception {
         IgniteToIgniteMigration.start(
-            ThickClientMigrationOrigin.create(getConfiguration("source-reader").setClientMode(true)),
-            ThickClientMigrationOrigin.create(getConfiguration("dest-writer").setClientMode(true)),
-            cfg.setLogger(log)
+            ThickClientMigrationEndpoint.create(getConfiguration("source-reader").setClientMode(true)),
+            ThickClientMigrationEndpoint.create(getConfiguration("dest-writer").setClientMode(true)),
+            cfg.logger(log)
         );
     }
 
@@ -704,12 +799,13 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
     }
 
     /** CLI transformer with a public no-argument constructor. */
-    public static class RenameTransformer implements CacheConfigTransformer {
+    public static class RenameTransformer
+        implements BiFunction<IgniteConfiguration, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> {
         /** */
         private String prefix;
 
-        /** {@inheritDoc} */
-        @Override public void configure(Map<String, String> parameters) {
+        /** */
+        public void configure(Map<String, String> parameters) {
             prefix = parameters.get("prefix");
         }
 

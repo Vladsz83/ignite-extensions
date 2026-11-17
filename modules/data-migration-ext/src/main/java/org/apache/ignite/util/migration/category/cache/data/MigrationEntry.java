@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.ignite.util.migration.api;
+package org.apache.ignite.util.migration.category.cache.data;
 
 import java.io.Serializable;
 import java.util.Objects;

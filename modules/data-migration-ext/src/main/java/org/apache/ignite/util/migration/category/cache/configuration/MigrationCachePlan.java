@@ -15,11 +15,12 @@
  * limitations under the License.
  */
 
-package org.apache.ignite.util.migration.impl;
+package org.apache.ignite.util.migration.category.cache.configuration;
 
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,20 +28,23 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.IgniteException;
+import org.apache.ignite.cache.QueryEntity;
 import org.apache.ignite.configuration.CacheConfiguration;
+import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.processors.cache.CacheType;
-import org.apache.ignite.util.migration.api.IgniteToIgniteMigrationConfiguration;
-import org.apache.ignite.util.migration.api.MigrationCache;
-import org.apache.ignite.util.migration.api.MigrationSource;
-import org.apache.ignite.util.migration.api.MigrationTransformer;
+import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
+import org.apache.ignite.internal.processors.query.QueryEntityEx;
+import org.apache.ignite.internal.util.typedef.internal.U;
+import org.apache.ignite.util.migration.MigrationTransformer;
 
 /** Per-migration cache selection and name mapping. Prepared once on first use; performs no destination writes. */
 public final class MigrationCachePlan {
     /** */
-    private final MigrationSource src;
+    private final IgniteEx srcIg;
 
     /** */
-    private final IgniteToIgniteMigrationConfiguration cfg;
+    private final CacheSelectionConfiguration selection;
 
     /** */
     private final MigrationTransformer<MigrationCache> transformer;
@@ -51,21 +55,18 @@ public final class MigrationCachePlan {
     /** */
     private Map<String, String> cacheNames;
 
-    /** */
-    private boolean keepViews;
-
     /**
-     * @param src Connected source.
-     * @param cfg Migration configuration.
+     * @param srcIg Connected source cluster.
+     * @param selection Shared cache selection and name mapping.
      * @param transformer Cache selection and transformation callback.
      */
     public MigrationCachePlan(
-        MigrationSource src,
-        IgniteToIgniteMigrationConfiguration cfg,
+        IgniteEx srcIg,
+        CacheSelectionConfiguration selection,
         MigrationTransformer<MigrationCache> transformer
     ) {
-        this.src = src;
-        this.cfg = cfg;
+        this.srcIg = srcIg;
+        this.selection = selection;
         this.transformer = transformer;
     }
 
@@ -83,26 +84,19 @@ public final class MigrationCachePlan {
         return cacheNames;
     }
 
-    /** @return Whether all user caches are selected without renaming, allowing SQL view transfer. */
-    public boolean keepViews() throws IgniteCheckedException {
-        prepare();
-
-        return keepViews;
-    }
-
     /** */
     private synchronized void prepare() throws IgniteCheckedException {
         if (caches != null)
             return;
 
-        Collection<MigrationCache> srcCaches = src.caches();
+        Collection<MigrationCache> srcCaches = sourceCaches(srcIg);
         List<MigrationCache> selected = new ArrayList<>();
         Map<String, String> names = new LinkedHashMap<>();
         Set<String> destNames = new HashSet<>();
 
         for (MigrationCache item : srcCaches) {
-            if (!cfg.includes(item.configuration()) ||
-                item.type() == CacheType.DATA_STRUCTURES && !cfg.isMoveDataStructures())
+            if (!selection.includes(item.configuration()) ||
+                item.type() == CacheType.DATA_STRUCTURES && !selection.moveDataStructures())
                 continue;
 
             String grpName = item.configuration().getGroupName();
@@ -111,7 +105,7 @@ public final class MigrationCachePlan {
             if (cache == null)
                 continue;
 
-            CacheConfiguration<?, ?> cacheCfg = cfg.getCacheConfigurationTransformer().apply(cache.configuration());
+            CacheConfiguration<?, ?> cacheCfg = selection.cacheConfigurationTransformer().apply(cache.configuration());
 
             if (cacheCfg == null)
                 continue;
@@ -119,19 +113,60 @@ public final class MigrationCachePlan {
             if (item.type() == CacheType.DATA_STRUCTURES &&
                 (!item.sourceName().equals(cacheCfg.getName()) || !Objects.equals(grpName, cacheCfg.getGroupName()))) {
                 throw new IgniteCheckedException("Data structure cache and group names must be preserved: " +
-                    item.sourceName());
+                    item.sourceName() + '.');
             }
 
             if (cacheCfg.getName() == null || cacheCfg.getName().isEmpty() || !destNames.add(cacheCfg.getName()))
-                throw new IgniteCheckedException("Invalid or duplicate transformed cache name: " + cacheCfg.getName());
+                throw new IgniteCheckedException("Invalid or duplicate transformed cache name: " + cacheCfg.getName() + '.');
 
             names.put(item.sourceName(), cacheCfg.getName());
             selected.add(new MigrationCache(item.sourceName(), cacheCfg, cache.sql(), item.type()));
         }
 
-        keepViews = srcCaches.stream().filter(cache -> cache.type() == CacheType.USER)
-            .allMatch(cache -> cache.sourceName().equals(names.get(cache.sourceName())));
         cacheNames = Collections.unmodifiableMap(names);
         caches = Collections.unmodifiableList(selected);
+    }
+
+    /** */
+    private static List<MigrationCache> sourceCaches(IgniteEx ig) {
+        List<MigrationCache> res = new ArrayList<>();
+
+        for (DynamicCacheDescriptor desc : ig.context().cache().cacheDescriptors().values()) {
+            if (desc.cacheType() != CacheType.USER && desc.cacheType() != CacheType.DATA_STRUCTURES)
+                continue;
+
+            // The descriptor schema contains ALTER TABLE/CREATE INDEX changes absent from the original configuration.
+            CacheConfiguration<?, ?> cacheCfg = new CacheConfiguration<>(desc.cacheConfiguration());
+
+            cacheCfg.clearQueryEntities();
+            cacheCfg.setQueryEntities(desc.schema().entities());
+
+            try {
+                // Transformers must never mutate a live descriptor or its nested affinity/query objects.
+                cacheCfg = U.unmarshal(ig.context(), U.marshal(ig.context(), cacheCfg),
+                    MigrationCachePlan.class.getClassLoader());
+            }
+            catch (IgniteCheckedException e) {
+                throw new IgniteException("Failed to copy cache configuration: " + cacheCfg.getName() + '.', e);
+            }
+
+            for (QueryEntity entity : cacheCfg.getQueryEntities()) {
+                if (entity instanceof QueryEntityEx) {
+                    QueryEntityEx ex = (QueryEntityEx)entity;
+
+                    if (Integer.valueOf(-1).equals(ex.getPrimaryKeyInlineSize()))
+                        ex.setPrimaryKeyInlineSize(null);
+
+                    if (Integer.valueOf(-1).equals(ex.getAffinityKeyInlineSize()))
+                        ex.setAffinityKeyInlineSize(null);
+                }
+            }
+
+            res.add(new MigrationCache(cacheCfg.getName(), cacheCfg, desc.sql(), desc.cacheType()));
+        }
+
+        res.sort(Comparator.comparing(MigrationCache::sourceName));
+
+        return res;
     }
 }

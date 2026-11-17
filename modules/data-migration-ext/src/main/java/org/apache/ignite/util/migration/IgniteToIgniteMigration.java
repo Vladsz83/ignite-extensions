@@ -17,65 +17,68 @@
 
 package org.apache.ignite.util.migration;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteLogger;
-import org.apache.ignite.util.migration.api.IgniteToIgniteMigrationConfiguration;
-import org.apache.ignite.util.migration.api.MigrationChannel;
-import org.apache.ignite.util.migration.api.MigrationDestination;
-import org.apache.ignite.util.migration.api.MigrationSource;
-import org.apache.ignite.util.migration.impl.MigrationCachePlan;
-import org.apache.ignite.util.migration.impl.ThickClientMigrationOrigin;
-import org.apache.ignite.util.migration.impl.channel.BinaryMetadataMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.CacheConfigurationsMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.CacheDataMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.MetastorageMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.SqlViewsMigrationChannel;
-import org.apache.ignite.util.migration.impl.channel.TypeMappingsMigrationChannel;
+import org.apache.ignite.internal.IgniteEx;
+import org.apache.ignite.internal.thread.IgniteThreadFactory;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsMigrationChannel;
+import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
+import org.apache.ignite.util.migration.category.cache.configuration.MigrationCachePlan;
+import org.apache.ignite.util.migration.category.cache.data.CacheDataMigrationChannel;
+import org.apache.ignite.util.migration.category.metastorage.MetastorageMigrationChannel;
+import org.apache.ignite.util.migration.category.type.BinaryMetadataMigrationChannel;
+import org.apache.ignite.util.migration.category.type.TypeMappingsMigrationChannel;
 
 /** Connects migration endpoints and runs their transfer channels in dependency order. */
 public class IgniteToIgniteMigration {
+
     /**
      * Runs a migration, closing both endpoints on success or failure.
      *
-     * @param src Source endpoint.
-     * @param dest Destination endpoint.
-     * @param cfg Migration configuration.
+     * @param from Source endpoint.
+     * @param to Destination endpoint.
+     * @param mCfg Migration configuration.
      */
     public static void start(
-        MigrationSource src,
-        MigrationDestination dest,
-        IgniteToIgniteMigrationConfiguration cfg
+        MigrationOrigin<?> from,
+        MigrationOrigin<?> to,
+        IgniteToIgniteMigrationConfiguration mCfg
     ) throws IgniteCheckedException {
-        cfg.validate();
+        mCfg.validate();
 
-        IgniteLogger log = cfg.getLogger();
-        long start = System.currentTimeMillis();
+        IgniteLogger log = mCfg.logger();
+        long start = System.nanoTime();
 
         if (log.isInfoEnabled()) {
-            log.info("Starting data migration [time=" + start + ", batchSize=" + cfg.getBatchSize() +
-                ", readThreads=" + cfg.getReadThreads() + ", writeThreads=" + cfg.getWriteThreads() +
-                ", readLimit=" + cfg.getReadLimitInSec() + ", writeLimit=" + cfg.getWriteLimitInSec() + ']');
+            log.info("Starting data migration [time=" + System.currentTimeMillis() + ", batchSize=" +
+                mCfg.cacheData().batchSize() + ", readThreads=" + mCfg.cacheData().readThreads() +
+                ", writeThreads=" + mCfg.cacheData().writeThreads() + ", readLimit=" + mCfg.cacheData().readLimitInSec() +
+                ", writeLimit=" + mCfg.cacheData().writeLimitInSec() + "].");
         }
 
-        try (src; dest) {
-            src.connect();
-            dest.connect();
+        try (from; to) {
+            from.connect();
+            to.connect();
 
-            if (src instanceof ThickClientMigrationOrigin && dest instanceof ThickClientMigrationOrigin &&
-                ((ThickClientMigrationOrigin)src).clusterId().equals(((ThickClientMigrationOrigin)dest).clusterId()))
-                throw new IgniteCheckedException("Source and destination must be different clusters");
+            // One shared pool serves every channel; sized to also cover the cache-data reader/writer workers.
+            ExecutorService pool = Executors.newFixedThreadPool(
+                Math.max(mCfg.migrationThreads(),
+                    mCfg.cacheData().readThreads() + mCfg.cacheData().writeThreads()),
+                new IgniteThreadFactory(null, "migration"));
 
-            List<MigrationChannel<?>> channels = prepareChannels(src, dest, cfg);
-
-            for (MigrationChannel<?> channel : channels)
-                channel.transfer();
-
-            dest.finish();
+            try {
+                runPipeline(from, to, mCfg, pool);
+            }
+            finally {
+                pool.shutdownNow();
+            }
 
             if (log.isInfoEnabled())
-                log.info("Data migration completed [elapsedMs=" + (System.currentTimeMillis() - start) + ']');
+                log.info("Data migration completed [elapsedMs=" +
+                    TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + "].");
         }
         catch (IgniteCheckedException | RuntimeException e) {
             log.error("Data migration failed", e);
@@ -84,30 +87,53 @@ public class IgniteToIgniteMigration {
         }
     }
 
-    /** Prepares the configured channels in dependency order. */
-    private static List<MigrationChannel<?>> prepareChannels(
-        MigrationSource src,
-        MigrationDestination dest,
-        IgniteToIgniteMigrationConfiguration cfg
-    ) {
-        List<MigrationChannel<?>> channels = new ArrayList<>();
+    /** Builds and runs the configured channels in dependency order. */
+    private static void runPipeline(
+        MigrationOrigin<?> from,
+        MigrationOrigin<?> to,
+        IgniteToIgniteMigrationConfiguration mCfg,
+        ExecutorService pool
+    ) throws IgniteCheckedException {
+        // All current channels require thick client (IgniteEx) endpoints.
+        if (!(from.origin() instanceof IgniteEx) || !(to.origin() instanceof IgniteEx))
+            throw new IgniteCheckedException("This migration pipeline requires IgniteEx endpoints (thick client).");
 
-        if (!cfg.isNoBinaryMetadataCreate())
-            channels.add(new BinaryMetadataMigrationChannel(src, dest, cfg));
+        // The check above justifies the unchecked casts.
+        @SuppressWarnings("unchecked")
+        MigrationOrigin<IgniteEx> src = (MigrationOrigin<IgniteEx>)from;
+        @SuppressWarnings("unchecked")
+        MigrationOrigin<IgniteEx> dest = (MigrationOrigin<IgniteEx>)to;
 
-        if (!cfg.isNoMappingsCreate())
-            channels.add(new TypeMappingsMigrationChannel(src, dest, cfg));
+        if (src.origin().cluster().id().equals(dest.origin().cluster().id()))
+            throw new IgniteCheckedException("Source and destination must be different clusters.");
 
-        channels.add(new MetastorageMigrationChannel(src, dest, cfg));
+        IgniteLogger log = mCfg.logger();
 
         // Cache selection and name mapping are needed even when cache creation is disabled.
-        MigrationCachePlan cachePlan = new MigrationCachePlan(src, cfg,
-            cfg.getTransformer(CacheConfigurationsMigrationChannel.class));
+        MigrationTransformer<MigrationCache> cacheTransformer = mCfg.transformer(CacheConfigurationsMigrationChannel.class);
+        MigrationCachePlan cachePlan = new MigrationCachePlan(src.origin(), mCfg.cacheSelection(), cacheTransformer);
 
-        channels.add(new CacheConfigurationsMigrationChannel(src, dest, cfg, cachePlan));
-        channels.add(new SqlViewsMigrationChannel(src, dest, cfg, cachePlan));
-        channels.add(new CacheDataMigrationChannel(src, dest, cfg, cachePlan));
+        if (!mCfg.noBinaryMetadataCreate())
+            run(new BinaryMetadataMigrationChannel(src, dest, log), pool, mCfg.transformer(BinaryMetadataMigrationChannel.class));
 
-        return channels;
+        if (!mCfg.noMappingsCreate())
+            run(new TypeMappingsMigrationChannel(src, dest, log), pool, mCfg.transformer(TypeMappingsMigrationChannel.class));
+
+        run(new CacheConfigurationsMigrationChannel(src, dest, log, mCfg.cacheConfigurations(), cachePlan), pool, cacheTransformer);
+
+        run(new MetastorageMigrationChannel(src, dest, log, mCfg.metastorage()), pool,
+            mCfg.transformer(MetastorageMigrationChannel.class));
+
+        run(new CacheDataMigrationChannel(src, dest, log, mCfg.cacheData(), cachePlan), pool,
+            mCfg.transformer(CacheDataMigrationChannel.class));
+    }
+
+    /**
+     * Runs a single channel with its transformer. The generic signature keeps the channel item type and the
+     * transformer aligned without unchecked casts.
+     */
+    private static <T> void run(MigrationChannel<T> channel, ExecutorService pool, MigrationTransformer<T> transformer)
+        throws IgniteCheckedException {
+        channel.transfer(pool, transformer);
     }
 }

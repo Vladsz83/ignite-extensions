@@ -15,42 +15,42 @@
  * limitations under the License.
  */
 
-package org.apache.ignite.util.migration.api;
+package org.apache.ignite.util.migration.category.type;
 
-/** A source partition and its destination cache. */
-public class MigrationPartition {
+/** Platform-specific type mapping; the numeric ID must not be regenerated at the destination. */
+public class MigrationTypeMapping {
     /** */
-    private final String srcCache;
-
-    /** */
-    private final String destCache;
+    private final byte platformId;
 
     /** */
-    private final int part;
+    private final int typeId;
+
+    /** */
+    private final String name;
 
     /**
-     * @param srcCache Source cache name.
-     * @param destCache Destination cache name.
-     * @param part Partition number.
+     * @param platformId Platform ID.
+     * @param typeId Type ID.
+     * @param name Class name.
      */
-    public MigrationPartition(String srcCache, String destCache, int part) {
-        this.srcCache = srcCache;
-        this.destCache = destCache;
-        this.part = part;
+    public MigrationTypeMapping(byte platformId, int typeId, String name) {
+        this.platformId = platformId;
+        this.typeId = typeId;
+        this.name = name;
     }
 
-    /** @return Source cache name. */
-    public String sourceCache() {
-        return srcCache;
+    /** @return Platform ID. */
+    public byte platformId() {
+        return platformId;
     }
 
-    /** @return Destination cache name. */
-    public String destinationCache() {
-        return destCache;
+    /** @return Type ID. */
+    public int typeId() {
+        return typeId;
     }
 
-    /** @return Source partition number. */
-    public int partition() {
-        return part;
+    /** @return Class name. */
+    public String typeName() {
+        return name;
     }
 }

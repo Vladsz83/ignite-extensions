@@ -86,23 +86,25 @@ the cache's configured access-expiration behavior.
 |---|---|---|
 | `--src-client-node-config path` | Required | Source Spring XML. |
 | `--dest-client-node-config path` | Required for built-in destination | Destination Spring XML. |
-| `--destination class` | None | Public no-argument `MigrationDestination`, instead of destination XML. |
+| `--destination class` | None | Public no-argument `MigrationOrigin`, instead of destination XML. |
 | `--cache-group-names a,b` | All | Source groups; an ungrouped cache is selected by its cache name. |
 | `--no-cache-create` | false | Require all selected destination caches to exist. |
 | `--create-cache-if-not-exists` | false | Accept existing destination caches and create missing ones. |
 | `--no-binary-metadata-create` | false | Skip explicit binary metadata registration. |
 | `--no-mappings-create` | false | Skip explicit type mapping registration. |
+| `--ignore-default-filter` | false | Also copy distributed metastorage entries that are not portable to the destination cluster (cluster identity, graceful-shutdown, SQL views). |
 | `--batch-size N` | 1 | Maximum entries in a write batch. |
 | `--read-threads N` | 1 | Partition reader threads. |
 | `--write-threads N` | 1 | Writer threads. |
+| `--migration-threads N` | 4 | Thread count of the shared executor used by all channels. |
 | `--queue-capacity N` | 64 | Maximum queued batches; a full queue blocks readers. |
 | `--read-limit-in-sec N` | 0 | Global read rate in entries/second; zero is unlimited. |
 | `--write-limit-in-sec N` | 0 | Global write submission rate; zero is unlimited. |
 | `--skip-expire-time` | false | Ignore source expiration timestamps. |
 | `--skip-conflict-version` | false | Ignore source conflict versions. |
 | `--move-data-structures true\|false` | true | Include data structure backing caches. |
-| `--cache-config-transformer class` | Identity | Public no-argument Function, BiFunction or `CacheConfigTransformer`. |
-| `--cache-config-transformer-parameters k=v,...` | None | Parameters passed to `CacheConfigTransformer.configure`. |
+| `--cache-config-transformer class` | Identity | Public no-argument `Function` or `BiFunction` (destination-aware). |
+| `--cache-config-transformer-parameters k=v,...` | None | Invoked reflectively via a public `configure(Map)` method on the transformer. |
 | `--help` | | Print usage and exit successfully. |
 
 `--no-binary-metdata-create` is accepted as an alias for the spelling in the ticket.
@@ -131,36 +133,55 @@ All streamer buffers are flushed and acknowledged before successful completion.
 
 ## Configuration and channels
 
-The stages run in dependency order: binary metadata, platform mappings, selected
-distributed settings, cache/SQL configuration, SQL views, and cache records. Metadata IDs,
-binary schemas, current QueryEntities, SQL-created flags and indexes are retained.
-Binary metadata and type mappings are cluster-wide and are copied even when only
-some caches are selected.
+The stages run in dependency order: binary metadata, platform mappings,
+cache/SQL configuration, distributed settings, and cache records.
+Metadata IDs, binary schemas, current QueryEntities, SQL-created flags and indexes
+are retained. Binary metadata and type mappings are cluster-wide and are copied even
+when only some caches are selected.
 
-Each transfer is an implementation of `AbstractMigrationChannel<T>` in
-`org.apache.ignite.util.migration.impl.channel`:
+Each transfer is an implementation of `AbstractMigrationChannel<FROM, TO, E>`: the origin
+types and the transferred entity type are declared per channel, and `from()`/`to()`
+return the raw origin connections. Channels and their entity types are grouped by
+category under `org.apache.ignite.util.migration.category`:
 
-| Channel | Entities |
-|---|---|
-| `BinaryMetadataMigrationChannel` | Binary metadata. |
-| `TypeMappingsMigrationChannel` | Platform type mappings. |
-| `MetastorageMigrationChannel` | Selected distributed settings, applied before cache creation. |
-| `CacheConfigurationsMigrationChannel` | Cache and SQL configurations. |
-| `SqlViewsMigrationChannel` | SQL view definitions, read and applied after cache creation. |
-| `CacheDataMigrationChannel` | Cache records. |
+| Package | Channels | Entities |
+|---|---|---|
+| `category.type` | `BinaryMetadataMigrationChannel`, `TypeMappingsMigrationChannel` | Binary metadata, platform type mappings (`MigrationTypeMapping`). |
+| `category.metastorage` | `MetastorageMigrationChannel` | Distributed settings and SQL view definitions. |
+| `category.cache` | `CacheConfigurationsMigrationChannel`, `CacheDataMigrationChannel` | Cache configurations (`MigrationCache`), cache records (`MigrationEntry`). |
 
-`MigrationChannel<T>` defines the transfer contract. The abstract base shares
-endpoints, configuration, typed transformations and logging. `IgniteToIgniteMigration`
-owns the connections, builds an ordered `List<MigrationChannel<?>>` in `prepareChannels`,
-and calls `transfer()` on each channel in a loop. Disabled binary metadata and type
-mapping channels are omitted from the list. Channel selection is centralized here
-so additional endpoint-specific implementations can be selected as they are added.
+The client-node endpoint `ThickClientMigrationEndpoint` lives in
+`org.apache.ignite.util.migration.endpoint`. It implements `MigrationOrigin<IgniteEx>`,
+whose `origin()` returns the raw in-JVM connection. `IgniteToIgniteMigration.prepareChannels`
+performs a one-time `instanceof IgniteEx` check on both origins (justifying an unchecked
+`MigrationOrigin<IgniteEx>` view) and validates that they resolve to different clusters
+before any transfer starts. This is the extension point for future origin types (for
+example a thin-client origin): channels that accept them are parameterized accordingly.
 
-Each channel reads and writes its own entities through the endpoints. The metastorage
-channel uses `src.metastorage` / `dest.metastorage` for settings. The SQL-view channel
-independently uses `src.sqlViews` / `dest.sqlView` after the underlying tables exist.
+`MigrationChannel<T>` defines the transfer contract. The abstract base shares the two
+origins, configuration, a shared executor, typed transformations and logging.
+`IgniteToIgniteMigration` owns the connections, builds an ordered `List<MigrationChannel<?>>`
+in `prepareChannels`, and calls `transfer()` on each channel in a loop. Disabled binary
+metadata and type mapping channels are omitted from the list. Channel selection is
+centralized here so additional endpoint-specific implementations can be selected as they
+are added.
 
-Cache configuration, SQL-view and data channels share a `MigrationCachePlan` describing
+Every channel draws its worker threads from a single shared `ExecutorService` owned by
+`IgniteToIgniteMigration`. Its size is `max(migrationThreads, readThreads + writeThreads)`
+so the cache-data reader/writer workers always have enough threads even when
+`--migration-threads` is set low. Channels that parallelize a transfer submit tasks to this
+pool and wait for their own work to finish before returning, so the orchestrator shuts the
+pool down only after the last channel completes.
+
+Each channel reads and writes its own entities through the origins. The metastorage
+channel iterates the source distributed metastorage and writes keys to the destination.
+A default key filter skips entries that are not portable to the destination cluster:
+the cluster identity key, whose cluster ID destination nodes would adopt on startup,
+graceful-shutdown coordination, which holds source node ids, and SQL view definitions,
+which reference schemas that may be absent on the destination. The filter can be
+disabled with `--ignore-default-filter`.
+
+Cache configuration and data channels share a `MigrationCachePlan` describing
 selected cache definitions and name mappings. This helper prepares the selection once
 on first use and performs no destination writes. Channels consume the plan directly;
 they do not receive other channels or callbacks into them. Cache selection runs even
@@ -175,43 +196,52 @@ compatible configurations.
 
 `Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>>` is compatible with
 the dump-reader transformer model. A `BiFunction` also receives the destination
-`IgniteConfiguration` (null for custom destinations). `CacheConfigTransformer`
-adds the parameter map. Put custom classes and their dependencies on the utility's classpath.
+`IgniteConfiguration` (null for custom destinations). A public
+`configure(Map<String, String>)` method receives the
+`--cache-config-transformer-parameters` map. Put custom classes and their
+dependencies on the utility's classpath.
 
 Programmatic configuration uses `IgniteToIgniteMigrationConfiguration`:
 
 ```java
-IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration()
-    .setSkipConflictVersion(true)
-    .setBatchSize(256)
-    .setCacheConfigurationTransformer(cache -> cache.setBackups(0))
-    .setMetastorageFilter(key -> key.startsWith("application."));
+IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+
+cfg.cacheData().skipConflictVersion(true).batchSize(256);
+cfg.cacheSelection().cacheConfigurationTransformer(cache -> cache.setBackups(0));
+cfg.metastorage().filter(new MetastorageKeyFilterTransformer(
+    Arrays.asList("secret.key"), Collections.singletonList("secret.")));
 
 IgniteToIgniteMigration.start(
-    ThickClientMigrationOrigin.create(srcCfg),
-    ThickClientMigrationOrigin.create(destCfg),
+    ThickClientMigrationEndpoint.create(srcCfg),
+    ThickClientMigrationEndpoint.create(destCfg),
     cfg
 );
 ```
 
-`setTransformer` configures a typed filter/transformer by channel class. Item types are
-`BinaryMetadata`, `MigrationTypeMapping`, `MigrationCache`, and `MigrationEntry` for
-their corresponding channels. Metastorage and SQL-view channels use
-`Map.Entry<String, Serializable>`. Their transformers are independent: the metastorage
-transformer handles settings, and the SQL-view transformer handles view definitions.
-Returning null skips an item; record transformers must be thread-safe and retain
-unique destination keys across concurrently processed partitions.
+The top-level configuration aggregates shared settings (`logger`, `migrationThreads`,
+channel-enable flags) and per-channel sub-configurations reached through
+`cacheData()`, `cacheSelection()`, `cacheConfigurations()` and `metastorage()`. Each
+sub-config exposes only the settings its channel consumes.
+
+`transformer` configures a typed filter/transformer by channel class. It is applied by
+`CacheConfigurationsMigrationChannel` (item type `MigrationCache`) and
+`MetastorageMigrationChannel` (item type `Map.Entry<String, Serializable>`, sees all
+keys after the default and configured key filters). Returning null skips an item.
 
 ```java
-cfg.setTransformer(CacheDataMigrationChannel.class,
-    entry -> entry.key() instanceof Integer ? entry : null);
+cfg.transformer(CacheConfigurationsMigrationChannel.class,
+    cache -> "excluded".equals(cache.sourceName()) ? null : cache);
 ```
 
-Distributed metastorage defaults to SQL properties (`distrConf-sql.*`) and SQL views
-(`ignite.internal.sql.view.*`). Views are copied only for a complete, unrenamed user-cache
-migration, so filtered migrations do not install views referencing excluded tables.
-Local metastorage, authentication users, encryption keys, cluster identity, baseline
-topology and deployment files are not copied.
+Distributed metastorage is copied to the destination, since it holds portable
+cluster-wide dynamic configuration. The default key filter skips the cluster identity
+key, whose cluster ID destination nodes would adopt on startup, graceful-shutdown
+coordination, which holds source node ids, and SQL view definitions;
+`--ignore-default-filter` copies them all. Additional
+`MetastorageKeyFilterTransformer`s can be added with `metastorage().filter(...)` to
+skip further entries by exact key or prefix, matched case-insensitively.
+Local metastorage, authentication users, encryption keys, baseline topology and
+deployment files are not copied.
 
 Data structure cache/group names are preserved because collection metadata references
 them. Atomics, sequences, references, stamped values, sets, queues, countdown latches,

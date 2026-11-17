@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.ignite.util.migration.api;
+package org.apache.ignite.util.migration.category.cache.configuration;
 
 import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.processors.cache.CacheType;
@@ -33,15 +33,6 @@ public class MigrationCache {
 
     /** */
     private final CacheType type;
-
-    /**
-     * @param srcName Source cache name.
-     * @param cfg Cache configuration.
-     * @param sql SQL-created flag.
-     */
-    public MigrationCache(String srcName, CacheConfiguration<?, ?> cfg, boolean sql) {
-        this(srcName, cfg, sql, CacheType.USER);
-    }
 
     /**
      * @param srcName Source cache name.

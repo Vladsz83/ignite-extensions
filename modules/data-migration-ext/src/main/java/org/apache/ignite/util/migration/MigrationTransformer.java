@@ -15,15 +15,16 @@
  * limitations under the License.
  */
 
-package org.apache.ignite.util.migration.api;
+package org.apache.ignite.util.migration;
 
-import org.apache.ignite.IgniteCheckedException;
+import org.jetbrains.annotations.Nullable;
 
-/** An owned migration endpoint. Instances are single-use and closed by the migration runner. */
-public interface MigrationOrigin extends AutoCloseable {
-    /** Opens the connection. */
-    void connect() throws IgniteCheckedException;
-
-    /** Releases all resources, including after a partially failed connection attempt. */
-    @Override void close();
+/** A channel filter/transformer. */
+@FunctionalInterface
+public interface MigrationTransformer<T> {
+    /**
+     * @param e Entity to transfer.
+     * @return Transformed entity. If {@code null}, the entity is to be skipped.
+     */
+    @Nullable T transform(T e);
 }

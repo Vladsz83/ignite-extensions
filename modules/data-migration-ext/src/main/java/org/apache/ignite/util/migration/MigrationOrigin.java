@@ -15,14 +15,22 @@
  * limitations under the License.
  */
 
-package org.apache.ignite.util.migration.api;
+package org.apache.ignite.util.migration;
 
-/** A channel filter/transformer. Returning {@code null} filters out an item. Implementations must be thread-safe. */
-@FunctionalInterface
-public interface MigrationTransformer<T> {
-    /**
-     * @param item Channel item.
-     * @return Transformed item, or {@code null} to skip it.
-     */
-    T transform(T item);
+import org.apache.ignite.IgniteCheckedException;
+
+/**
+ * A migration endpoint (source or destination).
+ *
+ * @param <T> Underlying connection type.
+ */
+public interface MigrationOrigin<T> extends AutoCloseable {
+    /** @return Underlying connection. Available after {@link #connect()}. */
+    T origin();
+
+    /** */
+    void connect() throws IgniteCheckedException;
+
+    /** */
+    @Override void close();
 }

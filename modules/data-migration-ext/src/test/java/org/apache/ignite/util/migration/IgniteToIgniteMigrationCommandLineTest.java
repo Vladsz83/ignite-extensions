@@ -20,6 +20,7 @@ package org.apache.ignite.util.migration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import org.junit.Test;
 
 import static org.apache.ignite.util.migration.IgniteToIgniteMigrationCommandLine.parse;
@@ -52,6 +53,17 @@ public class IgniteToIgniteMigrationCommandLineTest {
     @Test
     public void testHelp() {
         assertEquals(0, IgniteToIgniteMigrationCommandLine.run("--help"));
+    }
+
+    /** Valid options are parsed and the metastorage flag reaches the configuration. */
+    @Test
+    public void testValidOptions() {
+        Map<String, String> options = parse("--src-client-node-config", "src.xml",
+            "--dest-client-node-config", "dest.xml", "--ignore-default-filter");
+
+        IgniteToIgniteMigrationConfiguration cfg = IgniteToIgniteMigrationCommandLine.configuration(options);
+
+        assertTrue(cfg.metastorage().ignoreDefaultFilter());
     }
 
     /** */

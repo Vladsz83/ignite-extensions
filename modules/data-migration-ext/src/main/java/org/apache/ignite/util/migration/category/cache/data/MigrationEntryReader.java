@@ -15,7 +15,7 @@
  * limitations under the License.
  */
 
-package org.apache.ignite.util.migration.impl;
+package org.apache.ignite.util.migration.category.cache.data;
 
 import javax.cache.Cache;
 import org.apache.ignite.Ignite;
@@ -27,7 +27,6 @@ import org.apache.ignite.internal.processors.cache.GridCacheContext;
 import org.apache.ignite.internal.processors.cache.persistence.CacheDataRow;
 import org.apache.ignite.lang.IgniteClosure;
 import org.apache.ignite.resources.IgniteInstanceResource;
-import org.apache.ignite.util.migration.api.MigrationEntry;
 
 /**
  * Scan transformer reading value, version and expiry from one row. Ordinary ScanQuery entries do not expose
@@ -68,7 +67,7 @@ public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, O
                 row.expireTime(), row.version());
         }
         catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to read migration row from cache: " + cacheName, e);
+            throw new IgniteException("Failed to read migration row from cache: " + cacheName + '.', e);
         }
         finally {
             ctx.shared().database().checkpointReadUnlock();
