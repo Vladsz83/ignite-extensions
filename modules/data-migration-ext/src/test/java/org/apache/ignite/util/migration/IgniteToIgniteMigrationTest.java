@@ -472,7 +472,6 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         IgniteToIgniteMigrationConfiguration sqlCfg = new IgniteToIgniteMigrationConfiguration();
         sqlCfg.cacheData().skipConflictVersion(true).batchSize(3);
-        sqlCfg.metastorage().ignoreDefaultFilter(true);
         migrate(sqlCfg);
 
         assertEquals(sql(src, "SELECT ID, NAME, AGE FROM MIGRATION_TEST"),
@@ -637,15 +636,13 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         IgniteToIgniteMigrationConfiguration ps = new IgniteToIgniteMigrationConfiguration();
         ps.cacheData().skipConflictVersion(true);
         ps.cacheSelection().cacheGroupNames("selected");
-        ps.metastorage().ignoreDefaultFilter(true);
         migrate(ps);
 
         assertEquals(sql(src, "SELECT ID FROM INCLUDED"), sql(dest, "SELECT ID FROM INCLUDED"));
 
-        // Views are not portable by default (the schema may be absent on the destination) and are
-        // skipped by the default filter. Disabling the filter copies them as-is: a view referencing
-        // a table that was not migrated is registered only if its schema exists, otherwise it is
-        // silently dropped and does not fail the migration.
+        // The destination has a SQL schema (the selected table), so the view is portable and is
+        // copied. A view referencing a table that was not migrated is registered against the schema
+        // and does not fail the migration.
         AtomicInteger views = new AtomicInteger();
 
         dest.context().distributedMetastorage().iterate("ignite.internal.sql.view.", (key, val) -> views.incrementAndGet());

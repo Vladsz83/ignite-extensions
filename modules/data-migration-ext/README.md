@@ -92,7 +92,7 @@ the cache's configured access-expiration behavior.
 | `--create-cache-if-not-exists` | false | Accept existing destination caches and create missing ones. |
 | `--no-binary-metadata-create` | false | Skip explicit binary metadata registration. |
 | `--no-mappings-create` | false | Skip explicit type mapping registration. |
-| `--ignore-default-filter` | false | Also copy distributed metastorage entries that are not portable to the destination cluster (cluster identity, graceful-shutdown, SQL views). |
+| `--ignore-default-filter` | false | Also copy distributed metastorage entries that are not portable to the destination cluster (cluster identity, graceful-shutdown, and SQL views even when the destination has no SQL schema). |
 | `--batch-size N` | 1 | Maximum entries in a write batch. |
 | `--read-threads N` | 1 | Partition reader threads. |
 | `--write-threads N` | 1 | Writer threads. |
@@ -177,9 +177,9 @@ Each channel reads and writes its own entities through the origins. The metastor
 channel iterates the source distributed metastorage and writes keys to the destination.
 A default key filter skips entries that are not portable to the destination cluster:
 the cluster identity key, whose cluster ID destination nodes would adopt on startup,
-graceful-shutdown coordination, which holds source node ids, and SQL view definitions,
-which reference schemas that may be absent on the destination. The filter can be
-disabled with `--ignore-default-filter`.
+graceful-shutdown coordination, which holds source node ids, and SQL view definitions
+when the destination has no SQL schema. The filter can be disabled with
+`--ignore-default-filter`, which copies all of these entries unconditionally.
 
 Cache configuration and data channels share a `MigrationCachePlan` describing
 selected cache definitions and name mappings. This helper prepares the selection once
@@ -236,8 +236,8 @@ cfg.transformer(CacheConfigurationsMigrationChannel.class,
 Distributed metastorage is copied to the destination, since it holds portable
 cluster-wide dynamic configuration. The default key filter skips the cluster identity
 key, whose cluster ID destination nodes would adopt on startup, graceful-shutdown
-coordination, which holds source node ids, and SQL view definitions;
-`--ignore-default-filter` copies them all. Additional
+coordination, which holds source node ids, and SQL view definitions when the
+destination has no SQL schema; `--ignore-default-filter` copies them all. Additional
 `MetastorageKeyFilterTransformer`s can be added with `metastorage().filter(...)` to
 skip further entries by exact key or prefix, matched case-insensitively.
 Local metastorage, authentication users, encryption keys, baseline topology and

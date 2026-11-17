@@ -28,6 +28,7 @@ import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.internal.IgniteEx;
+import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
 import org.apache.ignite.util.migration.MigrationOrigin;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.AbstractMigrationChannel;
@@ -48,6 +49,16 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
 
     /** */
     private static final String GRACEFUL_SHUTDOWN_KEY = "ignite.internal.graceful.shutdown";
+
+    /**
+     * Keys that are not portable to another cluster: the destination adopts the cluster ID from the
+     * identity key on startup, and the graceful-stop set holds source node ids.
+     */
+    private static final MetastorageKeyFilterTransformer NOT_PORTABLE_KEY_FILTER =
+        new MetastorageKeyFilterTransformer(
+            new HashSet<>(Arrays.asList(CLUSTER_ID_TAG_KEY, GRACEFUL_SHUTDOWN_KEY)),
+            Collections.emptyList()
+        );
 
     /** */
     private final MetastorageMigrationConfiguration cfg;
@@ -81,10 +92,19 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
 
             // The default filter runs first, on the original key, so a later filter or transformer
             // cannot re-enable copying of a non-portable key (e.g. by renaming it).
-            if (!cfg.ignoreDefaultFilter() && NOT_PORTABLE_KEY_FILTER.transform(candidate) == null) {
-                info("Skipped distributed metastorage entry [key='" + key + "', reason='not portable to the destination'].");
+            if (!cfg.ignoreDefaultFilter()) {
+                // SQL views are not portable unless the destination has a SQL schema to attach them to.
+                if (key.startsWith(VIEW_PREFIX) && !hasSqlSchemas()) {
+                    info("Skipped distributed metastorage entry [key='" + key + "', reason='no SQL schema on destination'].");
 
-                return;
+                    return;
+                }
+
+                if (NOT_PORTABLE_KEY_FILTER.transform(candidate) == null) {
+                    info("Skipped distributed metastorage entry [key='" + key + "', reason='not portable to the destination'].");
+
+                    return;
+                }
             }
 
             for (MetastorageKeyFilterTransformer filter : cfg.filters()) {
@@ -116,5 +136,14 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
                 );
             }
         });
+    }
+
+    /** Whether any SQL schema exists on the destination (computed once). */
+    private boolean hasSqlSchemas() {
+        if (hasSqlSchemas == null)
+            hasSqlSchemas = to.origin().context().cache().cacheDescriptors().values().stream()
+                .anyMatch(DynamicCacheDescriptor::sql);
+
+        return hasSqlSchemas;
     }
 }
