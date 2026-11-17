@@ -31,6 +31,9 @@ import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.configuration.IgniteConfiguration;
 import org.apache.ignite.internal.util.typedef.X;
 import org.apache.ignite.internal.util.typedef.internal.U;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsMigrationConfiguration;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheSelectionConfiguration;
+import org.apache.ignite.util.migration.category.cache.data.CacheDataMigrationConfiguration;
 import org.apache.ignite.util.migration.endpoint.ThickClientMigrationEndpoint;
 import org.springframework.beans.factory.xml.XmlBeanDefinitionReader;
 import org.springframework.context.support.GenericApplicationContext;
@@ -55,10 +58,11 @@ public class IgniteToIgniteMigrationCommandLine {
 
     /** Options requiring a value. */
     private static final Set<String> VALUES = new HashSet<>(Arrays.asList(
-        "src-client-node-config", "dest-client-node-config", "cache-group-names", "batch-size", "read-threads",
-        "write-threads", "read-limit-in-sec", "write-limit-in-sec", "queue-capacity", "cache-config-transformer",
-        "cache-config-transformer-parameters", "destination", "move-data-structures", "per-node-buffer-size",
-        "per-node-parallel-operations", "per-thread-buffer-size", "timeout", "auto-flush-frequency"));
+        "src-client-node-config", "dest-client-node-config", "config", "cache-group-names", "batch-size",
+        "read-threads", "write-threads", "read-limit-in-sec", "write-limit-in-sec", "queue-capacity",
+        "migration-threads", "cache-config-transformer", "cache-config-transformer-parameters", "destination",
+        "move-data-structures", "per-node-buffer-size", "per-node-parallel-operations", "per-thread-buffer-size",
+        "timeout", "auto-flush-frequency"));
 
     /**
      * Main entry point.
@@ -81,7 +85,21 @@ public class IgniteToIgniteMigrationCommandLine {
 
         try {
             Map<String, String> options = parse(args);
+
             IgniteToIgniteMigrationConfiguration cfg = configuration(options);
+
+            if (options.containsKey("config")) {
+                GenericApplicationContext cfgCtx = context(options.get("config"));
+
+                try {
+                    IgniteToIgniteMigrationConfiguration xmlCfg = bean(cfgCtx,
+                        IgniteToIgniteMigrationConfiguration.class, "migration configuration");
+                    merge(cfg, xmlCfg, options);
+                }
+                finally {
+                    cfgCtx.close();
+                }
+            }
 
             X.println("Apache Ignite Data Migration, ver. " + VER);
             X.println(COPYRIGHT);
@@ -258,7 +276,7 @@ public class IgniteToIgniteMigrationCommandLine {
     }
 
     /** */
-    private static GenericApplicationContext context(String path) throws Exception {
+    static GenericApplicationContext context(String path) throws Exception {
         GenericApplicationContext ctx = new GenericApplicationContext();
 
         try {
@@ -275,7 +293,7 @@ public class IgniteToIgniteMigrationCommandLine {
     }
 
     /** */
-    private static IgniteConfiguration nodeConfiguration(GenericApplicationContext ctx, String role) {
+    static IgniteConfiguration nodeConfiguration(GenericApplicationContext ctx, String role) {
         Map<String, IgniteConfiguration> beans = ctx.getBeansOfType(IgniteConfiguration.class);
 
         if (beans.size() != 1)
@@ -333,10 +351,87 @@ public class IgniteToIgniteMigrationCommandLine {
     }
 
     /** */
+    private static <T> T bean(GenericApplicationContext ctx, Class<T> type, String role) {
+        Map<String, T> beans = ctx.getBeansOfType(type);
+
+        if (beans.size() != 1)
+            throw new IllegalArgumentException("Expected exactly one " + type.getSimpleName() +
+                " bean for " + role + ", found " + beans.size() + '.');
+
+        return beans.values().iterator().next();
+    }
+
+    /**
+     * Overlays CLI-specified values onto an XML-loaded configuration. Only flags explicitly present
+     * in the command line override XML values; defaults in {@link #configuration(Map)} do not.
+     */
+    private static void merge(IgniteToIgniteMigrationConfiguration target,
+        IgniteToIgniteMigrationConfiguration xml, Map<String, String> options) {
+        if (!options.containsKey("no-binary-metadata-create") && !options.containsKey("no-binary-metdata-create"))
+            target.setNoBinaryMetadataCreate(xml.isNoBinaryMetadataCreate());
+
+        if (!options.containsKey("no-mappings-create"))
+            target.setNoMappingsCreate(xml.isNoMappingsCreate());
+
+        if (!options.containsKey("migration-threads"))
+            target.setMigrationThreads(xml.getMigrationThreads());
+
+        CacheConfigurationsMigrationConfiguration srcCfg = xml.getCacheConfigurations();
+
+        if (!options.containsKey("no-cache-create"))
+            target.cacheConfigurations().noCacheCreate(srcCfg.isNoCacheCreate());
+
+        if (!options.containsKey("create-cache-if-not-exists"))
+            target.cacheConfigurations().createCacheIfNotExists(srcCfg.isCreateCacheIfNotExists());
+
+        CacheSelectionConfiguration srcSel = xml.getCacheSelection();
+
+        if (!options.containsKey("move-data-structures"))
+            target.cacheSelection().moveDataStructures(srcSel.isMoveDataStructures());
+
+        if (!options.containsKey("cache-group-names"))
+            target.cacheSelection().cacheGroupNames(srcSel.getCacheGroupNames().toArray(new String[0]));
+
+        if (!options.containsKey("ignore-default-filter"))
+            target.metastorage().ignoreDefaultFilter(xml.getMetastorage().isIgnoreDefaultFilter());
+
+        CacheDataMigrationConfiguration srcData = xml.getCacheData();
+
+        if (!options.containsKey("skip-expire-time"))
+            target.cacheData().skipExpireTime(srcData.isSkipExpireTime());
+
+        if (!options.containsKey("skip-conflict-version"))
+            target.cacheData().skipConflictVersion(srcData.isSkipConflictVersion());
+
+        if (!options.containsKey("batch-size"))
+            target.cacheData().batchSize(srcData.getBatchSize());
+
+        if (!options.containsKey("read-threads"))
+            target.cacheData().readThreads(srcData.getReadThreads());
+
+        if (!options.containsKey("write-threads"))
+            target.cacheData().writeThreads(srcData.getWriteThreads());
+
+        if (!options.containsKey("read-limit-in-sec"))
+            target.cacheData().readLimitInSec(srcData.getReadLimitInSec());
+
+        if (!options.containsKey("write-limit-in-sec"))
+            target.cacheData().writeLimitInSec(srcData.getWriteLimitInSec());
+
+        if (!options.containsKey("queue-capacity"))
+            target.cacheData().queueCapacity(srcData.getQueueCapacity());
+
+        if (!options.containsKey("use-data-streamer"))
+            target.cacheData().useDataStreamer(srcData.isUseDataStreamer())
+                .dataStreamerConfiguration(srcData.dataStreamerConfiguration());
+    }
+
+    /** */
     private static void usage() {
         X.println("Usage: data-migration.sh --src-client-node-config source.xml --dest-client-node-config destination.xml",
             "Connection XML files must each contain one IgniteConfiguration bean.",
-            "Options: --cache-group-names group1,group2 --batch-size N --read-threads N --write-threads N",
+            "Options: --config migration.xml (Spring XML with IgniteToIgniteMigrationConfiguration bean)",
+            "         --cache-group-names group1,group2 --batch-size N --read-threads N --write-threads N",
             "         --read-limit-in-sec N --write-limit-in-sec N --queue-capacity N",
             "         --no-cache-create | --create-cache-if-not-exists",
             "         --no-binary-metadata-create --no-mappings-create --skip-expire-time --skip-conflict-version",

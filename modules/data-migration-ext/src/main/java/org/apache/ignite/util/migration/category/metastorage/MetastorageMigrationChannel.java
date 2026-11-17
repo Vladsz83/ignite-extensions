@@ -21,7 +21,7 @@ import java.io.Serializable;
 import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.Arrays;
 import java.util.Collections;
-import java.util.HashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import org.apache.ignite.IgniteCheckedException;
@@ -50,21 +50,14 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
     /** */
     private static final String GRACEFUL_SHUTDOWN_KEY = "ignite.internal.graceful.shutdown";
 
-    /**
-     * Keys that are not portable to another cluster: the destination adopts the cluster ID from the
-     * identity key on startup, and the graceful-stop set holds source node ids.
-     */
-    private static final MetastorageKeyFilterTransformer NOT_PORTABLE_KEY_FILTER =
-        new MetastorageKeyFilterTransformer(
-            new HashSet<>(Arrays.asList(CLUSTER_ID_TAG_KEY, GRACEFUL_SHUTDOWN_KEY)),
-            Collections.emptyList()
-        );
-
     /** */
     private final MetastorageMigrationConfiguration cfg;
 
     /** */
     private Boolean hasSqlSchemas;
+
+    /** Lazily computed; includes the SQL view prefix only when the destination has no SQL schema. */
+    private MetastorageKeyFilterTransformer notPortableKeyFilter;
 
     /**
      * @param from Migration source.
@@ -87,24 +80,18 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
         ExecutorService pool,
         @Nullable MigrationTransformer<Map.Entry<String, Serializable>> transformer
     ) throws IgniteCheckedException {
+        MetastorageKeyFilterTransformer notPortableFilter =
+            cfg.ignoreDefaultFilter() ? null : notPortableKeyFilter();
+
         from.origin().context().distributedMetastorage().iterate("", (key, val) -> {
             Map.Entry<String, Serializable> candidate = new SimpleImmutableEntry<>(key, val);
 
             // The default filter runs first, on the original key, so a later filter or transformer
             // cannot re-enable copying of a non-portable key (e.g. by renaming it).
-            if (!cfg.ignoreDefaultFilter()) {
-                // SQL views are not portable unless the destination has a SQL schema to attach them to.
-                if (key.startsWith(VIEW_PREFIX) && !hasSqlSchemas()) {
-                    info("Skipped distributed metastorage entry [key='" + key + "', reason='no SQL schema on destination'].");
+            if (notPortableFilter != null && notPortableFilter.transform(candidate) == null) {
+                info("Skipped distributed metastorage entry [key='" + key + "', reason='not portable to the destination'].");
 
-                    return;
-                }
-
-                if (NOT_PORTABLE_KEY_FILTER.transform(candidate) == null) {
-                    info("Skipped distributed metastorage entry [key='" + key + "', reason='not portable to the destination'].");
-
-                    return;
-                }
+                return;
             }
 
             for (MetastorageKeyFilterTransformer filter : cfg.filters()) {
@@ -145,5 +132,24 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
                 .anyMatch(DynamicCacheDescriptor::sql);
 
         return hasSqlSchemas;
+    }
+
+    /**
+     * Lazily builds the not-portable key filter. The SQL view prefix is included only when the
+     * destination has no SQL schema, because views cannot be attached in that case.
+     */
+    private MetastorageKeyFilterTransformer notPortableKeyFilter() {
+        if (notPortableKeyFilter == null) {
+            List<String> prefixes = hasSqlSchemas()
+                ? Collections.emptyList()
+                : Collections.singletonList(VIEW_PREFIX);
+
+            notPortableKeyFilter = new MetastorageKeyFilterTransformer(
+                Arrays.asList(CLUSTER_ID_TAG_KEY, GRACEFUL_SHUTDOWN_KEY),
+                prefixes
+            );
+        }
+
+        return notPortableKeyFilter;
     }
 }

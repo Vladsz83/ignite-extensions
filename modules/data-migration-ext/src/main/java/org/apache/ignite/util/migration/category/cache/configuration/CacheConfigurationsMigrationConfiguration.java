@@ -60,4 +60,24 @@ public class CacheConfigurationsMigrationConfiguration {
         if (noCacheCreate && createCacheIfNotExists)
             throw new IllegalArgumentException("no-cache-create and create-cache-if-not-exists are mutually exclusive.");
     }
+
+    /** @return Whether cache creation is disabled. */
+    public boolean isNoCacheCreate() {
+        return noCacheCreate;
+    }
+
+    /** @param val Whether all selected destination caches must already exist. */
+    public void setNoCacheCreate(boolean val) {
+        noCacheCreate = val;
+    }
+
+    /** @return Whether existing destination caches are accepted. */
+    public boolean isCreateCacheIfNotExists() {
+        return createCacheIfNotExists;
+    }
+
+    /** @param val Whether existing destination caches are accepted. */
+    public void setCreateCacheIfNotExists(boolean val) {
+        createCacheIfNotExists = val;
+    }
 }

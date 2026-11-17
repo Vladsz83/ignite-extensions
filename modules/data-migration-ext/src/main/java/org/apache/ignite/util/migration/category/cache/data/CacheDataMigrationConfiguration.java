@@ -85,6 +85,16 @@ public class CacheDataMigrationConfiguration {
         return this;
     }
 
+    /** @return Maximum entries per batch. */
+    public int getBatchSize() {
+        return batchSize;
+    }
+
+    /** @param val Maximum entries per batch. */
+    public void setBatchSize(int val) {
+        batchSize = val;
+    }
+
     /** @return Reader count. */
     public int readThreads() {
         return readThreads;
@@ -98,6 +108,16 @@ public class CacheDataMigrationConfiguration {
         readThreads = val;
 
         return this;
+    }
+
+    /** @return Reader count. */
+    public int getReadThreads() {
+        return readThreads;
+    }
+
+    /** @param val Number of reader threads. */
+    public void setReadThreads(int val) {
+        readThreads = val;
     }
 
     /** @return Writer count. */
@@ -115,6 +135,16 @@ public class CacheDataMigrationConfiguration {
         return this;
     }
 
+    /** @return Writer count. */
+    public int getWriteThreads() {
+        return writeThreads;
+    }
+
+    /** @param val Number of writer threads. */
+    public void setWriteThreads(int val) {
+        writeThreads = val;
+    }
+
     /** @return Maximum queued batches. */
     public int queueCapacity() {
         return queueCapacity;
@@ -128,6 +158,16 @@ public class CacheDataMigrationConfiguration {
         queueCapacity = val;
 
         return this;
+    }
+
+    /** @return Maximum queued batches. */
+    public int getQueueCapacity() {
+        return queueCapacity;
+    }
+
+    /** @param val Maximum queued batches. */
+    public void setQueueCapacity(int val) {
+        queueCapacity = val;
     }
 
     /** @return Global read entries per second, or zero. */
@@ -145,6 +185,16 @@ public class CacheDataMigrationConfiguration {
         return this;
     }
 
+    /** @return Global read entries per second, or zero. */
+    public int getReadLimitInSec() {
+        return readLimit;
+    }
+
+    /** @param val Global read rate in entries per second, or zero for unlimited. */
+    public void setReadLimitInSec(int val) {
+        readLimit = val;
+    }
+
     /** @return Global write entries per second, or zero. */
     public int writeLimitInSec() {
         return writeLimit;
@@ -158,6 +208,16 @@ public class CacheDataMigrationConfiguration {
         writeLimit = val;
 
         return this;
+    }
+
+    /** @return Global write entries per second, or zero. */
+    public int getWriteLimitInSec() {
+        return writeLimit;
+    }
+
+    /** @param val Global write rate in entries per second, or zero for unlimited. */
+    public void setWriteLimitInSec(int val) {
+        writeLimit = val;
     }
 
     /** @return Whether source expiry is ignored. */
@@ -175,6 +235,16 @@ public class CacheDataMigrationConfiguration {
         return this;
     }
 
+    /** @return Whether source expiry is ignored. */
+    public boolean isSkipExpireTime() {
+        return skipExpireTime;
+    }
+
+    /** @param val Whether source expiration timestamps are ignored. */
+    public void setSkipExpireTime(boolean val) {
+        skipExpireTime = val;
+    }
+
     /** @return Whether source conflict versions are ignored. */
     public boolean skipConflictVersion() {
         return skipConflictVersion;
@@ -190,6 +260,16 @@ public class CacheDataMigrationConfiguration {
         return this;
     }
 
+    /** @return Whether source conflict versions are ignored. */
+    public boolean isSkipConflictVersion() {
+        return skipConflictVersion;
+    }
+
+    /** @param val Whether source conflict versions are ignored. */
+    public void setSkipConflictVersion(boolean val) {
+        skipConflictVersion = val;
+    }
+
     /** @return Whether to load data using a data streamer. */
     public boolean useDataStreamer() {
         return useDataStreamer;
@@ -203,6 +283,16 @@ public class CacheDataMigrationConfiguration {
         useDataStreamer = val;
 
         return this;
+    }
+
+    /** @return Whether to load data using a data streamer. */
+    public boolean isUseDataStreamer() {
+        return useDataStreamer;
+    }
+
+    /** @param val Whether to load data using a data streamer. */
+    public void setUseDataStreamer(boolean val) {
+        useDataStreamer = val;
     }
 
     /** @return Data streamer configuration callback. */

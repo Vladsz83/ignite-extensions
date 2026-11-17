@@ -181,4 +181,54 @@ public class IgniteToIgniteMigrationConfiguration {
 
         return this;
     }
+
+    /** @return Shared cache selection and name mapping. */
+    public CacheSelectionConfiguration getCacheSelection() {
+        return cacheSelection;
+    }
+
+    /** @return Destination cache creation policy. */
+    public CacheConfigurationsMigrationConfiguration getCacheConfigurations() {
+        return cacheConfigurations;
+    }
+
+    /** @return Data transfer knobs. */
+    public CacheDataMigrationConfiguration getCacheData() {
+        return cacheData;
+    }
+
+    /** @return Metastorage transfer settings. */
+    public MetastorageMigrationConfiguration getMetastorage() {
+        return metastorage;
+    }
+
+    /** @return Thread count of the shared executor. */
+    public int getMigrationThreads() {
+        return migrationThreads;
+    }
+
+    /** @param val Thread count of the shared executor. */
+    public void setMigrationThreads(int val) {
+        migrationThreads = val;
+    }
+
+    /** @return Whether binary metadata registration is disabled. */
+    public boolean isNoBinaryMetadataCreate() {
+        return noBinaryMetadataCreate;
+    }
+
+    /** @param val Whether to skip explicit binary metadata registration. */
+    public void setNoBinaryMetadataCreate(boolean val) {
+        noBinaryMetadataCreate = val;
+    }
+
+    /** @return Whether type mapping registration is disabled. */
+    public boolean isNoMappingsCreate() {
+        return noMappingsCreate;
+    }
+
+    /** @param val Whether to skip explicit type mapping registration. */
+    public void setNoMappingsCreate(boolean val) {
+        noMappingsCreate = val;
+    }
 }

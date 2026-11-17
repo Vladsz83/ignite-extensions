@@ -63,4 +63,27 @@ public class MetastorageMigrationConfiguration {
     public List<MetastorageKeyFilterTransformer> filters() {
         return Collections.unmodifiableList(filters);
     }
+
+    /** @return Whether the built-in default key filter is disabled. */
+    public boolean isIgnoreDefaultFilter() {
+        return ignoreDefaultFilter;
+    }
+
+    /** @param val Whether to skip the built-in default key filter. */
+    public void setIgnoreDefaultFilter(boolean val) {
+        ignoreDefaultFilter = val;
+    }
+
+    /** @return Configured key filters. */
+    public List<MetastorageKeyFilterTransformer> getFilters() {
+        return filters;
+    }
+
+    /** @param filters Configured key filters, replacing any previously set filters. */
+    public void setFilters(List<MetastorageKeyFilterTransformer> filters) {
+        this.filters.clear();
+
+        for (MetastorageKeyFilterTransformer f : filters)
+            this.filters.add(Objects.requireNonNull(f));
+    }
 }

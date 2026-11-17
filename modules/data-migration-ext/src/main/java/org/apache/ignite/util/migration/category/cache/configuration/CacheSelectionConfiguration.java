@@ -20,6 +20,7 @@ package org.apache.ignite.util.migration.category.cache.configuration;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.function.Function;
@@ -90,5 +91,44 @@ public class CacheSelectionConfiguration {
         cacheCfgTransformer = Objects.requireNonNull(transformer);
 
         return this;
+    }
+
+    /** @return Source cache group names. */
+    public Set<String> getCacheGroupNames() {
+        return cacheGrpNames;
+    }
+
+    /** @param names Source cache group names. An empty set selects all user caches. */
+    public void setCacheGroupNames(Set<String> names) {
+        cacheGrpNames = names;
+    }
+
+    /** @param names Source cache group names. An empty set selects all user caches. */
+    public void setCacheGroupNames(List<String> names) {
+        cacheGrpNames = new HashSet<>(names);
+    }
+
+    /** @return Whether data structure caches are included. */
+    public boolean isMoveDataStructures() {
+        return moveDataStructures;
+    }
+
+    /** @param val Whether to include data structure caches. */
+    public void setMoveDataStructures(boolean val) {
+        moveDataStructures = val;
+    }
+
+    /** @return Cache configuration transformer. */
+    public Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> getCacheConfigurationTransformer() {
+        return cacheCfgTransformer;
+    }
+
+    /**
+     * @param transformer Cache configuration transformer. Returning {@code null} excludes the cache and its data.
+     */
+    public void setCacheConfigurationTransformer(
+        Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer
+    ) {
+        cacheCfgTransformer = Objects.requireNonNull(transformer);
     }
 }
