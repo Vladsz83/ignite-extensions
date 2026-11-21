@@ -23,6 +23,7 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.function.BiConsumer;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
@@ -31,7 +32,7 @@ import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.AbstractCategoryTransfer;
+import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -40,10 +41,7 @@ import org.jetbrains.annotations.Nullable;
  * graceful-stop node ids, and SQL views when the destination has no SQL schema. Configured key
  * filters and a transformer can additionally skip or transform entries.
  */
-public class MetastorageTransferrer extends AbstractCategoryTransfer<Map.Entry<String, Serializable>> {
-    /** Source node. */
-    private final IgniteEx from;
-
+public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx, Map.Entry<String, Serializable>> {
     /** Destination node. */
     private final IgniteEx to;
 
@@ -77,32 +75,21 @@ public class MetastorageTransferrer extends AbstractCategoryTransfer<Map.Entry<S
         IgniteLogger log,
         MetastorageMigrationConfiguration cfg
     ) {
-        super(log);
+        super(from, MigrationCategory.METASTORAGE_ENTRY, Map.Entry.class, log);
 
-        this.from = from;
         this.to = to;
         this.cfg = cfg;
-    }
-
-    /** {@inheritDoc} */
-    @Override public MigrationCategory category() {
-        return MigrationCategory.METASTORAGE_ENTRY;
-    }
-
-    /** {@inheritDoc} */
-    @Override public Class<?> dataClass() {
-        return Map.Entry.class;
     }
 
     /** {@inheritDoc} */
     @Override protected void doTransfer(
         MigrationDestination dest,
         @Nullable MigrationTransformer<Map.Entry<String, Serializable>> transformer
-    ) throws IgniteCheckedException {
+    ) {
         MetastorageKeyFilterTransformer notPortableFilter =
             cfg.ignoreDefaultFilter() ? null : notPortableKeyFilter();
 
-        from.context().distributedMetastorage().iterate("", (key, val) -> {
+        BiConsumer<String, Serializable> transferEntry = (key, val) -> {
             Map.Entry<String, Serializable> candidate = new SimpleImmutableEntry<>(key, val);
 
             // The default filter runs first, on the original key, so a later filter or transformer
@@ -141,7 +128,14 @@ public class MetastorageTransferrer extends AbstractCategoryTransfer<Map.Entry<S
                     e
                 );
             }
-        });
+        };
+
+        try {
+            src.context().distributedMetastorage().iterate("", transferEntry);
+        }
+        catch (IgniteCheckedException e) {
+            throw new IgniteException("Failed to read distributed metastorage entries.", e);
+        }
     }
 
     /** Whether any SQL schema exists on the destination (computed once). */

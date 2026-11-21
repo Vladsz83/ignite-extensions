@@ -18,7 +18,6 @@
 package org.apache.ignite.util.migration.endpoint;
 
 import java.util.LinkedHashMap;
-import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.Ignition;
@@ -77,78 +76,65 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
     }
 
     /** {@inheritDoc} */
-    @Override public void accept(MigrationCategory category, Object data) throws IgniteCheckedException {
+    @Override public void accept(MigrationCategory category, Object data) {
         if (client == null)
-            throw new IgniteCheckedException("Migration destination is not connected.");
+            throw new IgniteException("Migration destination is not connected.");
 
-        try {
-            Object binary = client.binary();
+        Object binary = client.binary();
 
-            if (!(binary instanceof ClientBinary))
-                throw new IgniteCheckedException("Thin client does not expose its binary metadata handler.");
+        if (!(binary instanceof ClientBinary))
+            throw new IgniteException("Thin client does not expose its binary metadata handler.");
 
-            if (category == MigrationCategory.BINARY_METADATA) {
-                if (!(data instanceof BinaryMetadata))
-                    throw new IgniteCheckedException("Expected BinaryMetadata for migration category: " + category);
+        if (category == MigrationCategory.BINARY_METADATA) {
+            if (!(data instanceof BinaryMetadata))
+                throw new IgniteException("Expected BinaryMetadata for migration category: " + category);
 
-                BinaryMetadata metadata = (BinaryMetadata)data;
+            BinaryMetadata metadata = (BinaryMetadata)data;
 
-                ((ClientBinary)binary).binaryContext().updateMetadata(metadata.typeId(), metadata, false);
+            ((ClientBinary)binary).binaryContext().updateMetadata(metadata.typeId(), metadata, false);
+
+            return;
+        }
+
+        if (category == MigrationCategory.TYPE_MAPPING) {
+            if (!(data instanceof MigrationTypeMapping))
+                throw new IgniteException("Expected MigrationTypeMapping for migration category: " + category);
+
+            MigrationTypeMapping mapping = (MigrationTypeMapping)data;
+
+            if (mapping.platformId() != JAVA_ID) {
+                IgniteLogger log = cfg.getLogger();
+
+                if (log != null)
+                    log.warning("Thin client cannot register a non-Java platform mapping; leaving it unmapped " +
+                        "[platformId=" + mapping.platformId() + ", typeName=" + mapping.typeName() + "].");
 
                 return;
             }
 
-            if (category == MigrationCategory.TYPE_MAPPING) {
-                if (!(data instanceof MigrationTypeMapping))
-                    throw new IgniteCheckedException("Expected MigrationTypeMapping for migration category: " + category);
+            ((ClientBinary)binary).binaryContext().registerUserClassName(
+                mapping.typeId(), mapping.typeName(), false, false, mapping.platformId());
 
-                MigrationTypeMapping mapping = (MigrationTypeMapping)data;
-
-                if (mapping.platformId() != JAVA_ID) {
-                    IgniteLogger log = cfg.getLogger();
-
-                    if (log != null)
-                        log.warning("Thin client cannot register a non-Java platform mapping; leaving it unmapped " +
-                            "[platformId=" + mapping.platformId() + ", typeName=" + mapping.typeName() + "].");
-
-                    return;
-                }
-
-                ((ClientBinary)binary).binaryContext().registerUserClassName(
-                    mapping.typeId(), mapping.typeName(), false, false, mapping.platformId());
-
-                return;
-            }
-
-            throw new IgniteCheckedException("Destination does not accept migration category: " + category);
+            return;
         }
-        catch (IgniteCheckedException e) {
-            throw e;
-        }
-        catch (RuntimeException e) {
-            throw new IgniteCheckedException("Failed to accept migration data [category=" + category + "].", e);
-        }
+
+        throw new IgniteException("Destination does not accept migration category: " + category);
     }
 
     /** {@inheritDoc} */
-    @Override public synchronized IgniteClient connect() throws IgniteCheckedException {
+    @Override public synchronized IgniteClient connect() {
         if (closed)
-            throw new IgniteCheckedException("Migration thin client is already closed.");
+            throw new IgniteException("Migration thin client is already closed.");
 
         if (client != null)
-            throw new IgniteCheckedException("Migration thin client is already connected.");
+            throw new IgniteException("Migration thin client is already connected.");
 
-        try {
-            client = Ignition.startClient(cfg);
+        client = Ignition.startClient(cfg);
 
-            if (!client.cluster().state().active())
-                throw new IgniteCheckedException("Migration requires an active cluster.");
+        if (!client.cluster().state().active())
+            throw new IgniteException("Migration requires an active cluster.");
 
-            return client;
-        }
-        catch (IgniteException e) {
-            throw new IgniteCheckedException("Failed to start migration thin client.", e);
-        }
+        return client;
     }
 
     /** {@inheritDoc} */

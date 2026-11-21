@@ -148,13 +148,13 @@ public class IgniteToIgniteMigrationConfiguration {
         return transformers.keySet().stream().map(Class::getName).sorted().collect(Collectors.joining(",", "[", "]"));
     }
 
-    /** @return Migration logger. */
+    /** @return Logger. */
     public IgniteLogger logger() {
         return log;
     }
 
     /**
-     * @param log Migration logger.
+     * @param log Logger.
      * @return {@code this} for chaining.
      */
     public IgniteToIgniteMigrationConfiguration logger(IgniteLogger log) {

@@ -18,8 +18,6 @@
 package org.apache.ignite.util.migration.category;
 
 import java.util.concurrent.TimeUnit;
-import org.apache.ignite.IgniteCheckedException;
-import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.util.migration.CategoryTransferrer;
 import org.apache.ignite.util.migration.MigrationCategory;
@@ -27,28 +25,38 @@ import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.jetbrains.annotations.Nullable;
 
-/** Common source, category metadata, and transfer logging for category transferrers. */
-public abstract class AbstractCategoryTransferrer<FROM, E> implements CategoryTransferrer<E> {
+/**
+ * Common source, category metadata, and transfer logging for category transferrers.
+ *
+ * @param <SRC> Type of the connection used to read from the source cluster.
+ * @param <ENTITY> Type of a single item transferred in this migration category.
+ */
+public abstract class AbstractCategoryTransferrer<SRC, ENTITY> implements CategoryTransferrer<ENTITY> {
     /** Connected source. */
-    protected final FROM from;
+    protected final SRC src;
 
     /** Category transferred by this implementation. */
     private final MigrationCategory category;
 
     /** Runtime class of the transferred entities. */
-    private final Class<E> dataCls;
+    private final Class<? super ENTITY> dataCls;
 
-    /** Migration logger. */
+    /** Logger. */
     protected final IgniteLogger log;
 
     /**
-     * @param from Connected source.
+     * @param src Connected source.
      * @param category Category transferred by this implementation.
      * @param dataCls Runtime class of the transferred entities.
-     * @param log Migration logger.
+     * @param log Logger.
      */
-    protected AbstractCategoryTransferrer(FROM from, MigrationCategory category, Class<E> dataCls, IgniteLogger log) {
-        this.from = from;
+    protected AbstractCategoryTransferrer(
+        SRC src,
+        MigrationCategory category,
+        Class<? super ENTITY> dataCls,
+        IgniteLogger log
+    ) {
+        this.src = src;
         this.category = category;
         this.dataCls = dataCls;
         this.log = log;
@@ -60,39 +68,35 @@ public abstract class AbstractCategoryTransferrer<FROM, E> implements CategoryTr
     }
 
     /** {@inheritDoc} */
-    @Override public final Class<E> dataClass() {
+    @Override public final Class<? super ENTITY> dataClass() {
         return dataCls;
     }
 
     /** {@inheritDoc} */
-    @Override public final void transfer(MigrationDestination dest, @Nullable MigrationTransformer<E> transformer) {
+    @Override public final void transfer(MigrationDestination dest, @Nullable MigrationTransformer<ENTITY> transformer) {
         long start = System.nanoTime();
 
         info("Starting category transfer [category=" + category() + ", transferrer=" +
             getClass().getSimpleName() + "].");
 
-        try {
-            doTransfer(dest, transformer);
-        }
-        catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to transfer category [category=" + category() + ", error=" +
-                e.getMessage() + "].", e);
-        }
+        doTransfer(dest, transformer);
 
         info("Finished category transfer [category=" + category() + ", transferrer=" + getClass().getSimpleName() +
             ", elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + "].");
     }
 
     /** Performs the transfer implementation for this category. */
-    protected abstract void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<E> transformer)
-        throws IgniteCheckedException;
+    protected abstract void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<ENTITY> transformer);
 
     /** Applies the transformer and writes one entity directly to the destination. */
     protected final void transferEntity(
         MigrationDestination dest,
-        @Nullable MigrationTransformer<E> transformer, E entity
-    ) throws IgniteCheckedException {
-        E transformed = transformer == null ? entity : transformer.transform(entity);
+        @Nullable MigrationTransformer<ENTITY> transformer, ENTITY entity
+    ) {
+        if (entity == null)
+            return;
+
+        ENTITY transformed = transformer == null ? entity : transformer.transform(entity);
 
         if (transformed == null) {
             info("Skipped " + entityDescription(entity) + " [reason='filtered out'].");
@@ -102,11 +106,13 @@ public abstract class AbstractCategoryTransferrer<FROM, E> implements CategoryTr
 
         dest.accept(category(), transformed);
 
-        info("Transferred " + entityDescription(transformed) + ".");
+        info("Transferred " + entityDescription(transformed) + '.');
     }
 
     /** Returns the category-specific description for an entity transfer log. */
-    protected abstract String entityDescription(E entity);
+    protected String entityDescription(ENTITY entity) {
+        return dataCls.getSimpleName();
+    }
 
     /** Logs an informational message if enabled. */
     protected void info(String msg) {

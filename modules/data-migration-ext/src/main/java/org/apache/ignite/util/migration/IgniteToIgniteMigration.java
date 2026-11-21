@@ -23,7 +23,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
-import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.client.IgniteClient;
 import org.apache.ignite.cluster.ClusterNode;
@@ -52,7 +52,7 @@ public class IgniteToIgniteMigration {
         MigrationOrigin from,
         MigrationDestination to,
         IgniteToIgniteMigrationConfiguration mCfg
-    ) throws IgniteCheckedException {
+    ) {
         mCfg.validate();
 
         IgniteLogger log = mCfg.logger();
@@ -101,7 +101,7 @@ public class IgniteToIgniteMigration {
                 log.info("Data migration completed [elapsedMs=" +
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + "].");
         }
-        catch (IgniteCheckedException | RuntimeException | Error e) {
+        catch (RuntimeException | Error e) {
             log.error("Data migration failed", e);
 
             throw e;
@@ -115,13 +115,13 @@ public class IgniteToIgniteMigration {
         Object srcOrigin,
         Object destOrigin,
         IgniteToIgniteMigrationConfiguration mCfg
-    ) throws IgniteCheckedException {
+    ) {
         if (!(srcOrigin instanceof IgniteEx || srcOrigin instanceof IgniteClient) ||
             !(destOrigin instanceof IgniteEx || destOrigin instanceof IgniteClient))
-            throw new IgniteCheckedException("Migration endpoints must expose an IgniteEx or IgniteClient connection.");
+            throw new IgniteException("Migration endpoints must expose an IgniteEx or IgniteClient connection.");
 
         if (sameCluster(srcOrigin, destOrigin))
-            throw new IgniteCheckedException("Source and destination must be different clusters.");
+            throw new IgniteException("Source and destination must be different clusters.");
 
         IgniteLogger log = mCfg.logger();
         LinkedHashMap<MigrationCategory, Class<?>> compatibleCategories = checkSupportedCategories(from, to, log);
@@ -176,7 +176,7 @@ public class IgniteToIgniteMigration {
                     break;
 
                 default:
-                    throw new IgniteCheckedException("Unsupported migration category: " + category + '.');
+                    throw new IgniteException("Unsupported migration category: " + category + '.');
             }
         }
     }
@@ -188,9 +188,9 @@ public class IgniteToIgniteMigration {
         Object destOrigin,
         LinkedHashMap<MigrationCategory, Class<?>> compatibleCategories,
         IgniteToIgniteMigrationConfiguration mCfg
-    ) throws IgniteCheckedException {
+    ) {
         if (destOrigin instanceof IgniteClient && mCfg.cacheData().useDataStreamer())
-            throw new IgniteCheckedException("DataStreamer is not available through the thin-client API.");
+            throw new IgniteException("DataStreamer is not available through the thin-client API.");
 
         IgniteLogger log = mCfg.logger();
 
@@ -252,7 +252,7 @@ public class IgniteToIgniteMigration {
                     break;
 
                 default:
-                    throw new IgniteCheckedException("Unsupported migration category in thin-client mode: " +
+                    throw new IgniteException("Unsupported migration category in thin-client mode: " +
                         category + '.');
             }
         }
@@ -263,7 +263,7 @@ public class IgniteToIgniteMigration {
         MigrationOrigin from,
         MigrationDestination to,
         IgniteLogger log
-    ) throws IgniteCheckedException {
+    ) {
         LinkedHashMap<MigrationCategory, Class<?>> srcCategories = from.supportedCategories();
         LinkedHashMap<MigrationCategory, Class<?>> dstCategories = to.supportedCategories();
         LinkedHashMap<MigrationCategory, Class<?>> compatibleCategories = new LinkedHashMap<>();
@@ -287,7 +287,7 @@ public class IgniteToIgniteMigration {
             Class<?> dstCls = dstCategory.getValue();
 
             if (!dstCls.isAssignableFrom(srcCls)) {
-                throw new IgniteCheckedException("Incompatible migration category data classes [category=" + category +
+                throw new IgniteException("Incompatible migration category data classes [category=" + category +
                     ", categoryId=" + category.id() + ", sourceDataClass=" + srcCls.getName() +
                     ", destinationDataClass=" + dstCls.getName() + "].");
             }
@@ -308,21 +308,20 @@ public class IgniteToIgniteMigration {
         }
 
         if (compatibleCategories.isEmpty())
-            throw new IgniteCheckedException("Migration source and destination have no compatible categories " +
+            throw new IgniteException("Migration source and destination have no compatible categories " +
                 "[source=" + srcCategories + ", destination=" + dstCategories + "].");
 
         return compatibleCategories;
     }
 
     /** Validates that a capability map has explicit categories and payload classes. */
-    private static void validateCategoryMap(LinkedHashMap<MigrationCategory, Class<?>> categories, String endpoint)
-        throws IgniteCheckedException {
+    private static void validateCategoryMap(LinkedHashMap<MigrationCategory, Class<?>> categories, String endpoint) {
         if (categories == null)
-            throw new IgniteCheckedException("Migration " + endpoint + " returned a null category map.");
+            throw new IgniteException("Migration " + endpoint + " returned a null category map.");
 
         for (Map.Entry<MigrationCategory, Class<?>> entry : categories.entrySet()) {
             if (entry.getKey() == null || entry.getValue() == null) {
-                throw new IgniteCheckedException("Migration " + endpoint +
+                throw new IgniteException("Migration " + endpoint +
                     " category map must contain non-null categories and data classes.");
             }
         }
@@ -363,16 +362,14 @@ public class IgniteToIgniteMigration {
         MigrationDestination dest,
         LinkedHashMap<MigrationCategory, Class<?>> compatibleCategories,
         MigrationTransformer<T> transformer
-    ) throws IgniteCheckedException {
-        Class<?> cls = compatibleCategories.get(transferrer.category());
-        Class<?> dstCls = dest.supportedCategories().get(transferrer.category());
+    ) {
+        Class<?> srcDataCls = compatibleCategories.get(transferrer.category());
+        Class<?> dstDataCls = dest.supportedCategories().get(transferrer.category());
 
-        if (cls == null || !cls.equals(transferrer.dataClass()) ||
-            dstCls == null || !dstCls.isAssignableFrom(transferrer.dataClass())) {
-            throw new IgniteCheckedException("Migration category transferrer payload type does not match endpoint " +
-                "capabilities [category=" + transferrer.category() + ", transferrer=" +
-                transferrer.getClass().getName() + ", transferrerDataClass=" + transferrer.dataClass().getName() +
-                ", endpointDataClass=" + cls + ", destinationDataClass=" + dstCls + "].");
+        if (srcDataCls == null || !srcDataCls.equals(transferrer.dataClass()) ||
+            dstDataCls == null || !dstDataCls.isAssignableFrom(transferrer.dataClass())) {
+            throw new IgniteException("Migration category transferrer payload type does not match the endpoint's " +
+                "[category=" + transferrer.category() + ", srcType=" + srcDataCls + ", destType=" + dstDataCls + "].");
         }
 
         transferrer.transfer(dest, transformer);

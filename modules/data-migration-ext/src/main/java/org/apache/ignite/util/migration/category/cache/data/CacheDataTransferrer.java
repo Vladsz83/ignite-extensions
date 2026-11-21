@@ -52,6 +52,7 @@ import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.cache.query.QueryCursor;
 import org.apache.ignite.cluster.ClusterNode;
 import org.apache.ignite.internal.IgniteEx;
+import org.apache.ignite.internal.IgniteInterruptedCheckedException;
 import org.apache.ignite.internal.processors.cache.CacheOperationContext;
 import org.apache.ignite.internal.processors.cache.GridCacheContext;
 import org.apache.ignite.internal.processors.cache.IgniteCacheProxyImpl;
@@ -73,17 +74,14 @@ import org.apache.ignite.internal.util.typedef.internal.U;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.AbstractCategoryTransfer;
+import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 import org.apache.ignite.util.migration.category.cache.configuration.MigrationCachePlan;
 
 import static org.apache.ignite.internal.processors.cache.query.GridCacheQueryType.SCAN;
 import static org.apache.ignite.plugin.security.SecurityPermission.CACHE_READ;
 
 /** Transfers cache records through partition readers and a bounded queue of write batches. */
-public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntry> {
-    /** Source connection. */
-    private final Object from;
-
+public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, MigrationEntry> {
     /** Destination connection. */
     private final Object to;
 
@@ -141,7 +139,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     /**
      * @param from Connected source.
      * @param to Connected destination.
-     * @param log Migration logger.
+     * @param log Logger.
      * @param cfg Data transfer knobs.
      * @param cachePlan Cache selection for this migration.
      */
@@ -158,7 +156,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     /**
      * @param from Connected source.
      * @param to Connected destination.
-     * @param log Migration logger.
+     * @param log Logger.
      * @param cfg Data transfer knobs.
      * @param cachePlan Cache selection for this migration.
      * @param noBinaryMetadataCreate Whether binary metadata creation is disabled.
@@ -173,9 +171,8 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
         boolean noBinaryMetadataCreate,
         boolean noMappingsCreate
     ) {
-        super(log);
+        super(from, MigrationCategory.CACHE_ENTRY, MigrationEntry.class, log);
 
-        this.from = from;
         this.to = to;
         this.cfg = cfg;
         this.cachePlan = cachePlan;
@@ -188,21 +185,11 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     }
 
     /** {@inheritDoc} */
-    @Override public MigrationCategory category() {
-        return MigrationCategory.CACHE_ENTRY;
-    }
-
-    /** {@inheritDoc} */
-    @Override public Class<?> dataClass() {
-        return MigrationEntry.class;
-    }
-
-    /** {@inheritDoc} */
     @Override protected void doTransfer(
         MigrationDestination dest,
         MigrationTransformer<MigrationEntry> transformer
-    ) throws IgniteCheckedException {
-        Object src = from;
+    ) {
+        Object src = this.src;
         Object destOrigin = to;
 
         if (!(src instanceof IgniteEx) || !(destOrigin instanceof IgniteEx)) {
@@ -255,10 +242,10 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
 
-            throw new IgniteCheckedException("Migration interrupted.", e);
+            throw new IgniteException("Migration interrupted.", e);
         }
         catch (ExecutionException e) {
-            throw new IgniteCheckedException("Migration worker failed.", e.getCause());
+            throw new IgniteException("Migration worker failed.", e.getCause());
         }
         finally {
             reporter.shutdownNow();
@@ -275,23 +262,33 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     }
 
     /** */
-    private Void write() throws IgniteCheckedException, InterruptedException {
-        while (readers.get() != 0 || !batches.isEmpty()) {
-            Batch batch = batches.poll(100, TimeUnit.MILLISECONDS);
+    private Void write() throws IgniteInterruptedCheckedException {
+        try {
+            while (readers.get() != 0 || !batches.isEmpty()) {
+                Batch batch = batches.poll(100, TimeUnit.MILLISECONDS);
 
-            if (batch != null) {
-                writeLimiter.acquire(batch.entries.size());
-                writeBatch(destIg, batch.cache, batch.entries);
-                written.addAndGet(batch.entries.size());
+                if (batch != null) {
+                    writeLimiter.acquire(batch.entries.size());
+                    writeBatch(destIg, batch.cache, batch.entries);
+                    written.addAndGet(batch.entries.size());
+                }
             }
+        }
+        catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+
+            throw new IgniteInterruptedCheckedException(e);
+        }
+        catch (IgniteInterruptedCheckedException e) {
+            throw e;
         }
 
         return null;
     }
 
     /** Flushes streamers once every writer has finished. */
-    private void closeStreamers(boolean success) throws IgniteCheckedException {
-        IgniteCheckedException error = null;
+    private void closeStreamers(boolean success) {
+        IgniteException error = null;
 
         for (IgniteDataStreamer<Object, Object> streamer : streamers.values()) {
             try {
@@ -302,7 +299,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
             }
             catch (RuntimeException e) {
                 if (success && error == null)
-                    error = new IgniteCheckedException("Failed to flush DataStreamer migration buffers.", e);
+                    error = new IgniteException("Failed to flush DataStreamer migration buffers.", e);
                 else if (error != null)
                     error.addSuppressed(e);
                 else
@@ -317,8 +314,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     }
 
     /** */
-    private Void read(MigrationTransformer<MigrationEntry> transformer)
-        throws IgniteCheckedException, InterruptedException {
+    private Void read(MigrationTransformer<MigrationEntry> transformer) throws InterruptedException {
         try {
             Map.Entry<String, Integer> task;
 
@@ -340,7 +336,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     private void readPartition(
         Map.Entry<String, Integer> task,
         MigrationTransformer<MigrationEntry> transformer
-    ) throws IgniteCheckedException, InterruptedException {
+    ) throws InterruptedException {
         long start = System.nanoTime();
         long cnt = 0;
         List<MigrationEntry> batch = new ArrayList<>(cfg.batchSize());
@@ -476,7 +472,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     // --- Destination-side helpers ---
 
     /** */
-    private void writeBatch(IgniteEx ig, String name, List<MigrationEntry> entries) throws IgniteCheckedException {
+    private void writeBatch(IgniteEx ig, String name, List<MigrationEntry> entries) {
         IgniteCache<Object, Object> cache = openPublicCache(ig, name).withKeepBinary().withSkipStore();
         IgniteInternalCache<Object, Object> internal = ig.cachex(name).keepBinary().withSkipStore();
         GridCacheContext<Object, Object> ctx = internal.context();
@@ -485,7 +481,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
         if (cfg.useDataStreamer()) {
             if (entries.stream().anyMatch(e -> keepVer && e.version() != null ||
                 !cfg.skipExpireTime() && e.expireTime() != 0)) {
-                throw new IgniteCheckedException("DataStreamer cannot preserve entry metadata. " +
+                throw new IgniteException("DataStreamer cannot preserve entry metadata. " +
                     "Use --skip-conflict-version and --skip-expire-time, or disable DataStreamer.");
             }
 
@@ -512,7 +508,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
         }
 
         if (keepVer && !ctx.conflictNeedResolve()) {
-            throw new IgniteCheckedException("Conflict resolution must be configured on the destination servers " +
+            throw new IgniteException("Conflict resolution must be configured on the destination servers " +
                 "and client node to preserve conflict versions [cache=" + name +
                 "]. Use --skip-conflict-version to ignore source versions.");
         }
@@ -530,7 +526,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
                     ctx.versions().next(ctx.affinity().affinityTopologyVersion().topologyVersion());
 
                 if (ver == null)
-                    throw new IgniteCheckedException("Missing source conflict version for cache: " + name + '.');
+                    throw new IgniteException("Missing source conflict version for cache: " + name + '.');
 
                 ver = ver.conflictVersion();
 
@@ -544,8 +540,14 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
                     new GridCacheDrExpirationInfo(ctx.toCacheObject(val), ver, 0, expire));
             }
 
-            if (!batch.isEmpty())
-                internal.putAllConflict(batch);
+            if (!batch.isEmpty()) {
+                try {
+                    internal.putAllConflict(batch);
+                }
+                catch (IgniteCheckedException e) {
+                    throw new IgniteException("Failed to write conflict-aware batch [cache=" + name + "].", e);
+                }
+            }
         }
         else {
             Map<Object, Object> batch = new LinkedHashMap<>();
@@ -572,12 +574,12 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
     }
 
     /** */
-    private static Object destinationValue(GridCacheContext<?, ?> ctx, MigrationEntry entry) throws IgniteCheckedException {
+    private static Object destinationValue(GridCacheContext<?, ?> ctx, MigrationEntry entry) {
         return ctx.dataStructuresCache() ? dataStructureValue(ctx, entry.value()) : entry.value();
     }
 
     /** Rebase cluster timestamps without transferring source node/thread ownership. */
-    private static Object dataStructureValue(GridCacheContext<?, ?> ctx, Object val) throws IgniteCheckedException {
+    private static Object dataStructureValue(GridCacheContext<?, ?> ctx, Object val) {
         long gridStartTime = ctx.discovery().gridStartTime();
 
         if (val instanceof GridCacheCountDownLatchValue) {
@@ -594,7 +596,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
             GridCacheSemaphoreState sem = (GridCacheSemaphoreState)val;
 
             if (sem.getWaiters() != null && sem.getWaiters().values().stream().anyMatch(cnt -> cnt != 0))
-                throw new IgniteCheckedException("Cannot migrate a semaphore with acquired permits.");
+                throw new IgniteException("Cannot migrate a semaphore with acquired permits.");
 
             GridCacheSemaphoreState res = new GridCacheSemaphoreState(sem.getCount(), new HashMap<>(),
                 sem.isFailoverSafe(), gridStartTime);
@@ -610,7 +612,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntr
             if (lock.get() != 0 || !lock.getNodes().isEmpty() ||
                 lock.getConditionMap().values().stream().anyMatch(nodes -> !nodes.isEmpty()) ||
                 lock.getSignals() != null && lock.getSignals().values().stream().anyMatch(signals -> !signals.isEmpty()))
-                throw new IgniteCheckedException("Cannot migrate a lock with an owner, waiters or pending signals.");
+                throw new IgniteException("Cannot migrate a lock with an owner, waiters or pending signals.");
 
             GridCacheLockState res = new GridCacheLockState(0, null, 0, lock.isFailoverSafe(), lock.isFair(), gridStartTime);
 

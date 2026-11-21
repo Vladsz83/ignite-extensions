@@ -170,8 +170,7 @@ final class ThinClientCacheDataTransferrer {
     }
 
     /** Transfers cache records using the public cache APIs of thick or thin clients. */
-    void transfer(@Nullable MigrationTransformer<MigrationEntry> transformer)
-        throws IgniteCheckedException {
+    void transfer(@Nullable MigrationTransformer<MigrationEntry> transformer) {
         List<MigrationCache> caches = cachePlan.caches();
         Map<String, String> names = cachePlan.cacheNames();
         Object src = from;
@@ -184,7 +183,7 @@ final class ThinClientCacheDataTransferrer {
         }
 
         if (dest instanceof IgniteClient && cfg.useDataStreamer())
-            throw new IgniteCheckedException("DataStreamer is not available through the thin-client API.");
+            throw new IgniteException("DataStreamer is not available through the thin-client API.");
 
         if (src instanceof IgniteClient)
             warn("Thin source scans do not expose entry versions or expiry timestamps; source entry metadata " +
@@ -198,9 +197,8 @@ final class ThinClientCacheDataTransferrer {
 
         if (src instanceof IgniteEx) {
             for (Map.Entry<String, Integer> part : CacheDataTransferrer.partitions(
-                (IgniteEx)src, names.keySet())) {
+                (IgniteEx)src, names.keySet()))
                 pending.add(new ReadTask(part.getKey(), names.get(part.getKey()), part.getValue()));
-            }
         }
         else {
             for (MigrationCache cache : caches)
@@ -243,23 +241,17 @@ final class ThinClientCacheDataTransferrer {
         catch (InterruptedException e) {
             Thread.currentThread().interrupt();
 
-            throw new IgniteCheckedException("Thin-client migration interrupted.", e);
+            throw new IgniteException("Thin-client migration interrupted.", e);
         }
         catch (ExecutionException e) {
-            throw new IgniteCheckedException("Thin-client migration worker failed.", e.getCause());
+            throw new IgniteException("Thin-client migration worker failed.", e.getCause());
         }
         finally {
             reporter.shutdownNow();
-            cursors.forEach(cursor -> close(cursor));
-            try {
-                closeStreamers(success);
-            }
-            catch (IgniteCheckedException e) {
-                if (success)
-                    throw e;
 
-                log.error("Failed to close thin-client migration DataStreamer after an earlier failure.", e);
-            }
+            cursors.forEach(this::close);
+
+            closeStreamers(success);
 
             workers.stop(success);
         }
@@ -645,28 +637,19 @@ final class ThinClientCacheDataTransferrer {
     }
 
     /** Closes all active streamers after writer completion. */
-    private void closeStreamers(boolean success) throws IgniteCheckedException {
-        IgniteCheckedException error = null;
-
+    private void closeStreamers(boolean success) {
         for (IgniteDataStreamer<Object, Object> streamer : streamers.values()) {
             try {
                 if (success)
                     streamer.close();
                 else
                     streamer.close(true);
-            }
-            catch (RuntimeException e) {
-                if (error == null)
-                    error = new IgniteCheckedException("Failed to flush thin-client migration DataStreamer.", e);
-                else
-                    error.addSuppressed(e);
+            } catch (Exception e) {
+                log.warning("Error while closing streamer [" + streamer + "]", e);
             }
         }
 
         streamers.clear();
-
-        if (error != null)
-            throw error;
     }
 
     /** Closes a cursor quietly while the transferrer is unwinding. */

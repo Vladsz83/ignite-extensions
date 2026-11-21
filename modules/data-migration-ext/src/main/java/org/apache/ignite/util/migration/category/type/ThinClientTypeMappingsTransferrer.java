@@ -17,7 +17,7 @@
 
 package org.apache.ignite.util.migration.category.type;
 
-import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.binary.BinaryType;
 import org.apache.ignite.client.IgniteClient;
@@ -34,7 +34,7 @@ import static org.apache.ignite.internal.MarshallerPlatformIds.JAVA_ID;
 public class ThinClientTypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteClient, MigrationTypeMapping> {
     /**
      * @param from Connected thin-client source.
-     * @param log Migration logger.
+     * @param log Logger.
      */
     public ThinClientTypeMappingsTransferrer(IgniteClient from, IgniteLogger log) {
         super(from, MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class, log);
@@ -44,14 +44,18 @@ public class ThinClientTypeMappingsTransferrer extends AbstractCategoryTransferr
     @Override protected void doTransfer(
         MigrationDestination dest,
         @Nullable MigrationTransformer<MigrationTypeMapping> transformer
-    ) throws IgniteCheckedException {
-        ClientBinary binary = clientBinary();
+    ) {
+        Object binary0 = src.binary();
+
+        if (!(binary0 instanceof ClientBinary cliBinary))
+            throw new IgniteException("Thin source does not expose its type mappings handler.");
+
         ClassLoader ldr = Thread.currentThread().getContextClassLoader();
 
         if (ldr == null)
             ldr = getClass().getClassLoader();
 
-        for (BinaryType type : binary.types()) {
+        for (BinaryType type : cliBinary.types()) {
             String typeName = type.typeName();
 
             try {
@@ -65,16 +69,6 @@ public class ThinClientTypeMappingsTransferrer extends AbstractCategoryTransferr
             }
         }
 
-    }
-
-    /** Gets the thin client's binary handler. */
-    private ClientBinary clientBinary() throws IgniteCheckedException {
-        Object binary = from.binary();
-
-        if (!(binary instanceof ClientBinary))
-            throw new IgniteCheckedException("Thin source does not expose its type mappings handler.");
-
-        return (ClientBinary)binary;
     }
 
     /** {@inheritDoc} */

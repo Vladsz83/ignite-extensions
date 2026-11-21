@@ -17,7 +17,7 @@
 
 package org.apache.ignite.util.migration.category.type;
 
-import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.binary.BinaryType;
 import org.apache.ignite.client.IgniteClient;
@@ -33,33 +33,28 @@ import org.jetbrains.annotations.Nullable;
 public class ThinClientBinaryMetadataTransferrer extends AbstractCategoryTransferrer<IgniteClient, BinaryMetadata> {
     /**
      * @param from Connected thin-client source.
-     * @param log Migration logger.
+     * @param log Logger.
      */
     public ThinClientBinaryMetadataTransferrer(IgniteClient from, IgniteLogger log) {
         super(from, MigrationCategory.BINARY_METADATA, BinaryMetadata.class, log);
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<BinaryMetadata> transformer)
-        throws IgniteCheckedException {
-        ClientBinary binary = clientBinary();
+    @Override protected void doTransfer(
+        MigrationDestination dest,
+        @Nullable MigrationTransformer<BinaryMetadata> transformer
+    ) {
+        Object binary0 = src.binary();
 
-        for (BinaryType type : binary.types()) {
-            BinaryMetadata metadata = binary.binaryContext().metadata0(type.typeId());
+        if (!(binary0 instanceof ClientBinary cliBinary))
+            throw new IgniteException("Thin source does not expose its binary metadata handler.");
+
+        for (BinaryType type : cliBinary.types()) {
+            BinaryMetadata metadata = cliBinary.binaryContext().metadata0(type.typeId());
 
             if (metadata != null)
                 transferEntity(dest, transformer, metadata);
         }
-    }
-
-    /** Gets the thin client's binary handler. */
-    private ClientBinary clientBinary() throws IgniteCheckedException {
-        Object binary = from.binary();
-
-        if (!(binary instanceof ClientBinary))
-            throw new IgniteCheckedException("Thin source does not expose its binary metadata handler.");
-
-        return (ClientBinary)binary;
     }
 
     /** {@inheritDoc} */

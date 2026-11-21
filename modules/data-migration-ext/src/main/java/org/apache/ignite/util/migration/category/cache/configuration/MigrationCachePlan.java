@@ -59,7 +59,7 @@ public final class MigrationCachePlan {
     /** */
     private final MigrationTransformer<MigrationCache> transformer;
 
-    /** Migration logger; may be absent for callers using the standalone planning API. */
+    /** Logger; may be absent for callers using the standalone planning API. */
     private final IgniteLogger log;
 
     /** Selected cache definitions; non-null once preparation has completed. */
@@ -85,7 +85,7 @@ public final class MigrationCachePlan {
      * @param srcIg Connected source cluster.
      * @param selection Shared cache selection and name mapping.
      * @param transformer Cache selection and transformation callback.
-     * @param log Migration logger.
+     * @param log Logger.
      */
     public MigrationCachePlan(
         IgniteEx srcIg,
@@ -116,7 +116,7 @@ public final class MigrationCachePlan {
      * @param selection Shared cache selection and name mapping.
      * @param transformer Cache selection and transformation callback.
      * @param supportsDataStructures Whether the destination can preserve data-structure cache semantics.
-     * @param log Migration logger.
+     * @param log Logger.
      */
     public MigrationCachePlan(
         IgniteEx srcIg,
@@ -150,7 +150,7 @@ public final class MigrationCachePlan {
      * @param srcClient Connected thin-client source.
      * @param selection Shared cache selection and name mapping.
      * @param transformer Cache selection and transformation callback.
-     * @param log Migration logger.
+     * @param log Logger.
      */
     public MigrationCachePlan(
         IgniteClient srcClient,
@@ -167,21 +167,21 @@ public final class MigrationCachePlan {
     }
 
     /** @return Selected and transformed cache definitions. */
-    public List<MigrationCache> caches() throws IgniteCheckedException {
+    public List<MigrationCache> caches() {
         prepare();
 
         return caches;
     }
 
     /** @return Source to destination cache names. */
-    public Map<String, String> cacheNames() throws IgniteCheckedException {
+    public Map<String, String> cacheNames() {
         prepare();
 
         return cacheNames;
     }
 
     /** */
-    private synchronized void prepare() throws IgniteCheckedException {
+    private synchronized void prepare() {
         if (caches != null)
             return;
 
@@ -226,12 +226,12 @@ public final class MigrationCachePlan {
 
             if (item.type() == CacheType.DATA_STRUCTURES &&
                 (!item.sourceName().equals(cacheCfg.getName()) || !Objects.equals(grpName, cacheCfg.getGroupName()))) {
-                throw new IgniteCheckedException("Data structure cache and group names must be preserved: " +
+                throw new IgniteException("Data structure cache and group names must be preserved: " +
                     item.sourceName() + '.');
             }
 
             if (cacheCfg.getName() == null || cacheCfg.getName().isEmpty() || !destNames.add(cacheCfg.getName()))
-                throw new IgniteCheckedException("Invalid or duplicate transformed cache name: " + cacheCfg.getName() + '.');
+                throw new IgniteException("Invalid or duplicate transformed cache name: " + cacheCfg.getName() + '.');
 
             names.put(item.sourceName(), cacheCfg.getName());
             selected.add(new MigrationCache(item.sourceName(), cacheCfg, cache.sql(), item.type()));
@@ -294,7 +294,7 @@ public final class MigrationCachePlan {
      * Reads cache configuration through the thin-client API. Thin clients do not expose cache type, SQL-created
      * state, data-structure caches, or the full server-side cache configuration.
      */
-    private static List<MigrationCache> sourceCaches(IgniteClient client) throws IgniteCheckedException {
+    private static List<MigrationCache> sourceCaches(IgniteClient client) {
         List<MigrationCache> res = new ArrayList<>();
 
         try {
@@ -308,7 +308,7 @@ public final class MigrationCachePlan {
             }
         }
         catch (RuntimeException e) {
-            throw new IgniteCheckedException("Failed to read cache configurations through the thin client.", e);
+            throw new IgniteException("Failed to read cache configurations through the thin client.", e);
         }
 
         res.sort(Comparator.comparing(MigrationCache::sourceName));

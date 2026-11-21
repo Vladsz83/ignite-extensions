@@ -30,13 +30,10 @@ import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.AbstractCategoryTransfer;
+import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 
 /** Transfers selected cache configurations through thick or thin clients. */
-public class CacheConfigurationsTransferrer extends AbstractCategoryTransfer<MigrationCache> {
-    /** Source connection. */
-    private final Object from;
-
+public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<Object, MigrationCache> {
     /** Destination connection. */
     private final Object to;
 
@@ -49,7 +46,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransfer<Mig
     /**
      * @param from Connected source.
      * @param to Connected destination.
-     * @param log Migration logger.
+     * @param log Logger.
      * @param cfg Destination cache creation policy.
      * @param cachePlan Cache selection for this migration.
      */
@@ -60,28 +57,16 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransfer<Mig
         CacheConfigurationsMigrationConfiguration cfg,
         MigrationCachePlan cachePlan
     ) {
-        super(log);
+        super(from, MigrationCategory.CACHE_CONFIGURATION, MigrationCache.class, log);
 
-        this.from = from;
         this.to = to;
         this.cfg = cfg;
         this.cachePlan = cachePlan;
     }
 
     /** {@inheritDoc} */
-    @Override public MigrationCategory category() {
-        return MigrationCategory.CACHE_CONFIGURATION;
-    }
-
-    /** {@inheritDoc} */
-    @Override public Class<?> dataClass() {
-        return MigrationCache.class;
-    }
-
-    /** {@inheritDoc} */
-    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<MigrationCache> transformer)
-        throws IgniteCheckedException {
-        Object src = from;
+    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<MigrationCache> transformer) {
+        Object src = this.src;
         List<MigrationCache> caches = cachePlan.caches();
         Object destOrigin = to;
 
@@ -92,7 +77,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransfer<Mig
         }
 
         if (!(src instanceof IgniteEx) && !(src instanceof IgniteClient))
-            throw new IgniteCheckedException("Unsupported cache configuration source: " + src.getClass().getName());
+            throw new IgniteException("Unsupported cache configuration source: " + src.getClass().getName());
 
         if (src instanceof IgniteClient)
             warn("Thin source exposes only ClientCacheConfiguration; SQL-created flags and unsupported cache " +
@@ -116,7 +101,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransfer<Mig
             else if (destOrigin instanceof IgniteClient)
                 action = createOrValidateThinCache((IgniteClient)destOrigin, cache);
             else
-                throw new IgniteCheckedException("Unsupported cache configuration destination: " +
+                throw new IgniteException("Unsupported cache configuration destination: " +
                     destOrigin.getClass().getName());
 
             info("Cache " + action + " [sourceName=" + cache.sourceName() + ", destinationName=" +
@@ -168,7 +153,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransfer<Mig
     }
 
     /** Creates or validates a cache through the thin-client API. */
-    private String createOrValidateThinCache(IgniteClient client, MigrationCache cache) throws IgniteCheckedException {
+    private String createOrValidateThinCache(IgniteClient client, MigrationCache cache) {
         String name = cache.configuration().getName();
         boolean exists = client.cacheNames().contains(name);
 
@@ -197,7 +182,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransfer<Mig
             return "created";
         }
         catch (RuntimeException e) {
-            throw new IgniteCheckedException("Failed to create destination cache through the thin client: " + name + '.', e);
+            throw new IgniteException("Failed to create destination cache through the thin client: " + name + '.', e);
         }
     }
 

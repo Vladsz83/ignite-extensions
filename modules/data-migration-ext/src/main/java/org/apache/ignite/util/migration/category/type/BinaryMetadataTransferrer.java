@@ -17,7 +17,6 @@
 
 package org.apache.ignite.util.migration.category.type;
 
-import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.binary.BinaryType;
 import org.apache.ignite.internal.IgniteEx;
@@ -29,11 +28,11 @@ import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 import org.jetbrains.annotations.Nullable;
 
-/** Provides binary metadata migration by a ignite node (might be a client node). */
+/** Provides binary metadata migration by an Ignite node (might be a client node). */
 public class BinaryMetadataTransferrer extends AbstractCategoryTransferrer<IgniteEx, BinaryMetadata> {
     /**
      * @param from Migration source.
-     * @param log Migration logger.
+     * @param log Logger.
      */
     public BinaryMetadataTransferrer(IgniteEx from, IgniteLogger log) {
         super(from, MigrationCategory.BINARY_METADATA, BinaryMetadata.class, log);
@@ -43,8 +42,8 @@ public class BinaryMetadataTransferrer extends AbstractCategoryTransferrer<Ignit
     @Override protected void doTransfer(
         MigrationDestination dest,
         @Nullable MigrationTransformer<BinaryMetadata> transformer
-    ) throws IgniteCheckedException {
-        BinaryContext bCtxFrom = from.context().cacheObjects().binaryContext();
+    ) {
+        BinaryContext bCtxFrom = src.context().cacheObjects().binaryContext();
 
         for (BinaryType type : bCtxFrom.metadata()) {
             BinaryMetadata metadata = bCtxFrom.metadata0(type.typeId());

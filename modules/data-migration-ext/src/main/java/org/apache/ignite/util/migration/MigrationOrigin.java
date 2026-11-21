@@ -18,7 +18,6 @@
 package org.apache.ignite.util.migration;
 
 import java.util.LinkedHashMap;
-import org.apache.ignite.IgniteCheckedException;
 
 /** A migration endpoint (source or destination). */
 public interface MigrationOrigin extends AutoCloseable {
@@ -30,7 +29,7 @@ public interface MigrationOrigin extends AutoCloseable {
      *
      * @return Connected source or destination connection.
      */
-    Object connect() throws IgniteCheckedException;
+    Object connect();
 
     /** */
     @Override void close();

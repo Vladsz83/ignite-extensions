@@ -47,12 +47,9 @@ public class CacheConfigurationsMigrationConfiguration {
 
     /**
      * @param val Whether existing destination caches are accepted.
-     * @return {@code this} for chaining.
      */
-    public CacheConfigurationsMigrationConfiguration createCacheIfNotExists(boolean val) {
+    public void createCacheIfNotExists(boolean val) {
         createCacheIfNotExists = val;
-
-        return this;
     }
 
     /** Validates settings before a migration starts. */

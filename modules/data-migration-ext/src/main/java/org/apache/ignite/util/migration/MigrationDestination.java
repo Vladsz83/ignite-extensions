@@ -17,8 +17,6 @@
 
 package org.apache.ignite.util.migration;
 
-import org.apache.ignite.IgniteCheckedException;
-
 /** Destination side of a migration. Receiver operations are associated with {@link MigrationCategory}. */
 public interface MigrationDestination extends MigrationOrigin {
 
@@ -28,5 +26,5 @@ public interface MigrationDestination extends MigrationOrigin {
      * @param category Data category.
      * @param data Entity to accept.
      */
-    void accept(MigrationCategory category, Object data) throws IgniteCheckedException;
+    void accept(MigrationCategory category, Object data);
 }

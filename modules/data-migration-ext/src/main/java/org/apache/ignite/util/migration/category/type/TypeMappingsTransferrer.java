@@ -19,7 +19,6 @@ package org.apache.ignite.util.migration.category.type;
 
 import java.util.List;
 import java.util.Map;
-import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.processors.marshaller.MappedName;
@@ -33,7 +32,7 @@ import org.jetbrains.annotations.Nullable;
 public class TypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteEx, MigrationTypeMapping> {
     /**
      * @param from Migration source.
-     * @param log Migration logger.
+     * @param log Logger.
      */
     public TypeMappingsTransferrer(IgniteEx from, IgniteLogger log) {
         super(from, MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class, log);
@@ -43,8 +42,8 @@ public class TypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteE
     @Override protected void doTransfer(
         MigrationDestination dest,
         @Nullable MigrationTransformer<MigrationTypeMapping> transformer
-    ) throws IgniteCheckedException {
-        List<Map<Integer, MappedName>> mappings = from.context().marshallerContext().getCachedMappings();
+    ) {
+        List<Map<Integer, MappedName>> mappings = src.context().marshallerContext().getCachedMappings();
 
         for (int platform = 0; platform < mappings.size(); platform++) {
             for (Map.Entry<Integer, MappedName> entry : mappings.get(platform).entrySet()) {
