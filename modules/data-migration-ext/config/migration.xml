@@ -25,11 +25,11 @@
         <property name="noMappingsCreate" value="false"/>
 
         <!-- Cache selection -->
-        <property name="cacheSelection.moveDataStructures" value="true"/>
-        <!-- <property name="cacheSelection.cacheGroupNames">
+        <property name="cacheMigration.moveDataStructures" value="true"/>
+        <!-- <property name="cacheMigration.cacheGroupNames">
             <list><value>my-group</value></list>
         </property> -->
-        <!-- <property name="cacheSelection.cacheConfigurationTransformer" ref="myTransformer"/> -->
+        <!-- <property name="cacheMigration.cacheConfigurationTransformer" ref="myTransformer"/> -->
 
         <!-- Cache creation policy -->
         <property name="cacheConfigurations.noCacheCreate" value="false"/>

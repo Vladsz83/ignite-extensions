@@ -20,46 +20,31 @@ package org.apache.ignite.util.migration.category.cache.configuration;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.Comparator;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
-import org.apache.ignite.IgniteCheckedException;
+import java.util.function.Supplier;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
-import org.apache.ignite.cache.QueryEntity;
-import org.apache.ignite.client.ClientCache;
-import org.apache.ignite.client.ClientCacheConfiguration;
-import org.apache.ignite.client.IgniteClient;
 import org.apache.ignite.configuration.CacheConfiguration;
-import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.processors.cache.CacheType;
-import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
-import org.apache.ignite.internal.processors.query.QueryEntityEx;
-import org.apache.ignite.internal.util.typedef.internal.U;
 import org.apache.ignite.util.migration.MigrationTransformer;
 
 /** Per-migration cache selection and name mapping. Prepared once on first use; performs no destination writes. */
 public final class MigrationCachePlan {
     /** */
-    private final IgniteEx srcIg;
+    private final Supplier<Collection<MigrationCache>> src;
 
     /** */
-    private final IgniteClient srcClient;
-
-    /** */
-    private final CacheSelectionConfiguration selection;
-
-    /** */
-    private final boolean supportsDataStructures;
+    private final CacheMigrationConfiguration mCfg;
 
     /** */
     private final MigrationTransformer<MigrationCache> transformer;
 
-    /** Logger; may be absent for callers using the standalone planning API. */
+    /** */
     private final IgniteLogger log;
 
     /** Selected cache definitions; non-null once preparation has completed. */
@@ -69,99 +54,19 @@ public final class MigrationCachePlan {
     private Map<String, String> cacheNames;
 
     /**
-     * @param srcIg Connected source cluster.
-     * @param selection Shared cache selection and name mapping.
-     * @param transformer Cache selection and transformation callback.
-     */
-    public MigrationCachePlan(
-        IgniteEx srcIg,
-        CacheSelectionConfiguration selection,
-        MigrationTransformer<MigrationCache> transformer
-    ) {
-        this(srcIg, selection, transformer, true, null);
-    }
-
-    /**
-     * @param srcIg Connected source cluster.
-     * @param selection Shared cache selection and name mapping.
+     * @param src Lazy supplier of source cache definitions.
+     * @param mCfg Cache migration settings.
      * @param transformer Cache selection and transformation callback.
      * @param log Logger.
      */
     public MigrationCachePlan(
-        IgniteEx srcIg,
-        CacheSelectionConfiguration selection,
+        Supplier<Collection<MigrationCache>> src,
+        CacheMigrationConfiguration mCfg,
         MigrationTransformer<MigrationCache> transformer,
         IgniteLogger log
     ) {
-        this(srcIg, selection, transformer, true, log);
-    }
-
-    /**
-     * @param srcIg Connected source cluster.
-     * @param selection Shared cache selection and name mapping.
-     * @param transformer Cache selection and transformation callback.
-     * @param supportsDataStructures Whether the destination can preserve data-structure cache semantics.
-     */
-    public MigrationCachePlan(
-        IgniteEx srcIg,
-        CacheSelectionConfiguration selection,
-        MigrationTransformer<MigrationCache> transformer,
-        boolean supportsDataStructures
-    ) {
-        this(srcIg, selection, transformer, supportsDataStructures, null);
-    }
-
-    /**
-     * @param srcIg Connected source cluster.
-     * @param selection Shared cache selection and name mapping.
-     * @param transformer Cache selection and transformation callback.
-     * @param supportsDataStructures Whether the destination can preserve data-structure cache semantics.
-     * @param log Logger.
-     */
-    public MigrationCachePlan(
-        IgniteEx srcIg,
-        CacheSelectionConfiguration selection,
-        MigrationTransformer<MigrationCache> transformer,
-        boolean supportsDataStructures,
-        IgniteLogger log
-    ) {
-        this.srcIg = srcIg;
-        srcClient = null;
-        this.selection = selection;
-        this.supportsDataStructures = supportsDataStructures;
-        this.transformer = transformer;
-        this.log = log;
-    }
-
-    /**
-     * @param srcClient Connected thin-client source.
-     * @param selection Shared cache selection and name mapping.
-     * @param transformer Cache selection and transformation callback.
-     */
-    public MigrationCachePlan(
-        IgniteClient srcClient,
-        CacheSelectionConfiguration selection,
-        MigrationTransformer<MigrationCache> transformer
-    ) {
-        this(srcClient, selection, transformer, null);
-    }
-
-    /**
-     * @param srcClient Connected thin-client source.
-     * @param selection Shared cache selection and name mapping.
-     * @param transformer Cache selection and transformation callback.
-     * @param log Logger.
-     */
-    public MigrationCachePlan(
-        IgniteClient srcClient,
-        CacheSelectionConfiguration selection,
-        MigrationTransformer<MigrationCache> transformer,
-        IgniteLogger log
-    ) {
-        srcIg = null;
-        this.srcClient = srcClient;
-        this.selection = selection;
-        supportsDataStructures = false;
+        this.src = src;
+        this.mCfg = mCfg;
         this.transformer = transformer;
         this.log = log;
     }
@@ -185,22 +90,20 @@ public final class MigrationCachePlan {
         if (caches != null)
             return;
 
-        Collection<MigrationCache> srcCaches = srcIg == null ? sourceCaches(srcClient) : sourceCaches(srcIg);
         List<MigrationCache> selected = new ArrayList<>();
         Map<String, String> names = new LinkedHashMap<>();
         Set<String> destNames = new HashSet<>();
 
-        for (MigrationCache item : srcCaches) {
-            if (!selection.includes(item.configuration())) {
+        for (MigrationCache item : src.get()) {
+            if (!mCfg.includes(item.configuration())) {
                 info("Skipped cache [sourceName=" + item.sourceName() + ", reason='cache group filter'].");
 
                 continue;
             }
 
-            if (item.type() == CacheType.DATA_STRUCTURES &&
-                (!selection.moveDataStructures() || !supportsDataStructures)) {
+            if (item.type() == CacheType.DATA_STRUCTURES && (!mCfg.moveDataStructures() || !mCfg.supportsDataStructures())) {
                 info("Skipped data structure cache [sourceName=" + item.sourceName() + ", reason='" +
-                    (!selection.moveDataStructures() ? "move-data-structures=false" :
+                    (!mCfg.moveDataStructures() ? "move-data-structures=false" :
                         "destination does not support data structures") + "'].");
 
                 continue;
@@ -215,7 +118,7 @@ public final class MigrationCachePlan {
                 continue;
             }
 
-            CacheConfiguration<?, ?> cacheCfg = selection.cacheConfigurationTransformer().apply(cache.configuration());
+            CacheConfiguration<?, ?> cacheCfg = mCfg.cacheConfigurationTransformer().apply(cache.configuration());
 
             if (cacheCfg == null) {
                 info("Skipped cache [sourceName=" + item.sourceName() +
@@ -245,74 +148,5 @@ public final class MigrationCachePlan {
     private void info(String msg) {
         if (log != null && log.isInfoEnabled())
             log.info(msg);
-    }
-
-    /** */
-    private static List<MigrationCache> sourceCaches(IgniteEx ig) {
-        List<MigrationCache> res = new ArrayList<>();
-
-        for (DynamicCacheDescriptor desc : ig.context().cache().cacheDescriptors().values()) {
-            if (desc.cacheType() != CacheType.USER && desc.cacheType() != CacheType.DATA_STRUCTURES)
-                continue;
-
-            // The descriptor schema contains ALTER TABLE/CREATE INDEX changes absent from the original configuration.
-            CacheConfiguration<?, ?> cacheCfg = new CacheConfiguration<>(desc.cacheConfiguration());
-
-            cacheCfg.clearQueryEntities();
-            cacheCfg.setQueryEntities(desc.schema().entities());
-
-            try {
-                // Transformers must never mutate a live descriptor or its nested affinity/query objects.
-                cacheCfg = U.unmarshal(ig.context(), U.marshal(ig.context(), cacheCfg),
-                    MigrationCachePlan.class.getClassLoader());
-            }
-            catch (IgniteCheckedException e) {
-                throw new IgniteException("Failed to copy cache configuration: " + cacheCfg.getName() + '.', e);
-            }
-
-            for (QueryEntity entity : cacheCfg.getQueryEntities()) {
-                if (entity instanceof QueryEntityEx) {
-                    QueryEntityEx ex = (QueryEntityEx)entity;
-
-                    if (Integer.valueOf(-1).equals(ex.getPrimaryKeyInlineSize()))
-                        ex.setPrimaryKeyInlineSize(null);
-
-                    if (Integer.valueOf(-1).equals(ex.getAffinityKeyInlineSize()))
-                        ex.setAffinityKeyInlineSize(null);
-                }
-            }
-
-            res.add(new MigrationCache(cacheCfg.getName(), cacheCfg, desc.sql(), desc.cacheType()));
-        }
-
-        res.sort(Comparator.comparing(MigrationCache::sourceName));
-
-        return res;
-    }
-
-    /**
-     * Reads cache configuration through the thin-client API. Thin clients do not expose cache type, SQL-created
-     * state, data-structure caches, or the full server-side cache configuration.
-     */
-    private static List<MigrationCache> sourceCaches(IgniteClient client) {
-        List<MigrationCache> res = new ArrayList<>();
-
-        try {
-            for (String name : client.cacheNames()) {
-                ClientCache<Object, Object> cache = client.<Object, Object>cache(name);
-                ClientCacheConfiguration clientCfg = cache.getConfiguration();
-                CacheConfiguration<?, ?> cacheCfg = ThinClientCacheConfigurationAdapter.toCacheConfiguration(clientCfg);
-
-                // The thin API returns query entities but does not expose whether the cache was created by SQL DDL.
-                res.add(new MigrationCache(name, cacheCfg, false, CacheType.USER));
-            }
-        }
-        catch (RuntimeException e) {
-            throw new IgniteException("Failed to read cache configurations through the thin client.", e);
-        }
-
-        res.sort(Comparator.comparing(MigrationCache::sourceName));
-
-        return res;
     }
 }

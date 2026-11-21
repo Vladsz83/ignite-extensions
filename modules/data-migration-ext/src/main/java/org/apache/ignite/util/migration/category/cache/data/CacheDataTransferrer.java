@@ -358,7 +358,15 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
                 if (item == null)
                     continue;
 
-                readLimiter.acquire(1);
+                try {
+                    readLimiter.acquire(1);
+                }
+                catch (IgniteInterruptedCheckedException e) {
+                    Thread.currentThread().interrupt();
+
+                    throw new InterruptedException();
+                }
+
                 read.incrementAndGet();
                 cnt++;
 

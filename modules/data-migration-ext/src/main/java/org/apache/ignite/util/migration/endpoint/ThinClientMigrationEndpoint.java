@@ -126,13 +126,12 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
         if (closed)
             throw new IgniteException("Migration thin client is already closed.");
 
-        if (client != null)
-            throw new IgniteException("Migration thin client is already connected.");
+        if (client == null) {
+            client = Ignition.startClient(cfg);
 
-        client = Ignition.startClient(cfg);
-
-        if (!client.cluster().state().active())
-            throw new IgniteException("Migration requires an active cluster.");
+            if (!client.cluster().state().active())
+                throw new IgniteException("Migration requires an active cluster.");
+        }
 
         return client;
     }

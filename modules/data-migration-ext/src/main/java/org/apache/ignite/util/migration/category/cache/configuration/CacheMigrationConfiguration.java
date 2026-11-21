@@ -30,12 +30,21 @@ import org.apache.ignite.configuration.CacheConfiguration;
 /**
  * Cache selection and name mapping shared by the cache-configuration and cache-data transferrers.
  */
-public class CacheSelectionConfiguration {
+public class CacheMigrationConfiguration {
     /** */
     private Set<String> cacheGrpNames = Collections.emptySet();
 
     /** */
     private boolean moveDataStructures = true;
+
+    /** */
+    private boolean noCacheCreate;
+
+    /** */
+    private boolean createCacheIfNotExists;
+
+    /** */
+    private boolean supportsDataStructures = true;
 
     /** */
     private Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> cacheCfgTransformer = Function.identity();
@@ -53,13 +62,16 @@ public class CacheSelectionConfiguration {
     public void validate() {
         validatedNames(cacheGrpNames);
         Objects.requireNonNull(cacheCfgTransformer, "cache configuration transformer");
+
+        if (noCacheCreate && createCacheIfNotExists)
+            throw new IllegalArgumentException("no-cache-create and create-cache-if-not-exists are mutually exclusive.");
     }
 
     /**
      * @param names Source cache group names. An empty set selects all user caches.
      * @return {@code this} for chaining.
      */
-    public CacheSelectionConfiguration cacheGroupNames(String... names) {
+    public CacheMigrationConfiguration cacheGroupNames(String... names) {
         cacheGrpNames = validatedNames(Arrays.asList(Objects.requireNonNull(names)));
 
         return this;
@@ -74,7 +86,7 @@ public class CacheSelectionConfiguration {
      * @param val Whether to include data structure caches.
      * @return {@code this} for chaining.
      */
-    public CacheSelectionConfiguration moveDataStructures(boolean val) {
+    public CacheMigrationConfiguration moveDataStructures(boolean val) {
         moveDataStructures = val;
 
         return this;
@@ -89,7 +101,7 @@ public class CacheSelectionConfiguration {
      * @param transformer Cache configuration transformer. Returning {@code null} excludes the cache and its data.
      * @return {@code this} for chaining.
      */
-    public CacheSelectionConfiguration cacheConfigurationTransformer(
+    public CacheMigrationConfiguration cacheConfigurationTransformer(
         Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer
     ) {
         cacheCfgTransformer = Objects.requireNonNull(transformer);
@@ -134,6 +146,81 @@ public class CacheSelectionConfiguration {
         Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer
     ) {
         cacheCfgTransformer = Objects.requireNonNull(transformer);
+    }
+
+    /** @return Whether cache creation is disabled. */
+    public boolean noCacheCreate() {
+        return noCacheCreate;
+    }
+
+    /**
+     * @param val Whether all selected destination caches must already exist.
+     * @return {@code this} for chaining.
+     */
+    public CacheMigrationConfiguration noCacheCreate(boolean val) {
+        noCacheCreate = val;
+
+        return this;
+    }
+
+    /** @return Whether existing destination caches are accepted. */
+    public boolean createCacheIfNotExists() {
+        return createCacheIfNotExists;
+    }
+
+    /**
+     * @param val Whether existing destination caches are accepted.
+     * @return {@code this} for chaining.
+     */
+    public CacheMigrationConfiguration createCacheIfNotExists(boolean val) {
+        createCacheIfNotExists = val;
+
+        return this;
+    }
+
+    /** @return Whether cache creation is disabled. */
+    public boolean isNoCacheCreate() {
+        return noCacheCreate;
+    }
+
+    /** @param val Whether all selected destination caches must already exist. */
+    public void setNoCacheCreate(boolean val) {
+        noCacheCreate = val;
+    }
+
+    /** @return Whether existing destination caches are accepted. */
+    public boolean isCreateCacheIfNotExists() {
+        return createCacheIfNotExists;
+    }
+
+    /** @param val Whether existing destination caches are accepted. */
+    public void setCreateCacheIfNotExists(boolean val) {
+        createCacheIfNotExists = val;
+    }
+
+    /** @return Whether the destination supports data-structure caches. */
+    public boolean supportsDataStructures() {
+        return supportsDataStructures;
+    }
+
+    /**
+     * @param val Whether the destination supports data-structure caches.
+     * @return {@code this} for chaining.
+     */
+    public CacheMigrationConfiguration supportsDataStructures(boolean val) {
+        supportsDataStructures = val;
+
+        return this;
+    }
+
+    /** @return Whether the destination supports data-structure caches. */
+    public boolean isSupportsDataStructures() {
+        return supportsDataStructures;
+    }
+
+    /** @param val Whether the destination supports data-structure caches. */
+    public void setSupportsDataStructures(boolean val) {
+        supportsDataStructures = val;
     }
 
     /** Creates a validated, detached set of selected names. */

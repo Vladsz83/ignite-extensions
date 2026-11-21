@@ -108,13 +108,12 @@ public class ThickClientMigrationEndpoint implements MigrationDestination {
         if (closed)
             throw new IgniteException("Migration client node is already closed.");
 
-        if (ig != null)
-            throw new IgniteException("Migration client node is already connected.");
+        if (ig == null) {
+            ig = (IgniteEx)Ignition.start(cfg);
 
-        ig = (IgniteEx)Ignition.start(cfg);
-
-        if (!ig.cluster().state().active())
-            throw new IgniteException("Migration requires an active cluster.");
+            if (!ig.cluster().state().active())
+                throw new IgniteException("Migration requires an active cluster.");
+        }
 
         return ig;
     }

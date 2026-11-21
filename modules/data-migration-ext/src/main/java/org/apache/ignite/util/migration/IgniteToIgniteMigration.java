@@ -29,6 +29,7 @@ import org.apache.ignite.client.IgniteClient;
 import org.apache.ignite.cluster.ClusterNode;
 import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsTransferrer;
+import org.apache.ignite.util.migration.category.cache.configuration.ThinClientCacheConfigurationsTransferrer;
 import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
 import org.apache.ignite.util.migration.category.cache.configuration.MigrationCachePlan;
 import org.apache.ignite.util.migration.category.cache.data.CacheDataTransferrer;
@@ -63,13 +64,13 @@ public class IgniteToIgniteMigration {
                 from.getClass().getName() + ", destinationEndpoint=" + to.getClass().getName() +
                 ", sourceCategories=" + from.supportedCategories() +
                 ", destinationCategories=" + to.supportedCategories() +
-                ", cacheGroups=" + mCfg.cacheSelection().getCacheGroupNames() +
-                ", moveDataStructures=" + mCfg.cacheSelection().moveDataStructures() +
+                ", cacheGroups=" + mCfg.cacheMigration().getCacheGroupNames() +
+                ", moveDataStructures=" + mCfg.cacheMigration().moveDataStructures() +
                 ", cacheConfigTransformer=" +
-                mCfg.cacheSelection().cacheConfigurationTransformer().getClass().getName() +
+                mCfg.cacheMigration().cacheConfigurationTransformer().getClass().getName() +
                 ", transferrerTransformers=" + mCfg.transformerProviders() +
-                ", noCacheCreate=" + mCfg.cacheConfigurations().noCacheCreate() +
-                ", createCacheIfNotExists=" + mCfg.cacheConfigurations().createCacheIfNotExists() +
+                ", noCacheCreate=" + mCfg.cacheMigration().noCacheCreate() +
+                ", createCacheIfNotExists=" + mCfg.cacheMigration().createCacheIfNotExists() +
                 ", noBinaryMetadataCreate=" + mCfg.noBinaryMetadataCreate() +
                 ", noMappingsCreate=" + mCfg.noMappingsCreate() +
                 ", batchSize=" + mCfg.cacheData().batchSize() + ", readThreads=" +
@@ -138,7 +139,8 @@ public class IgniteToIgniteMigration {
         // Cache selection and name mapping are needed even when cache creation is disabled.
         MigrationTransformer<MigrationCache> cacheTransformer =
             mCfg.transformer(CacheConfigurationsTransferrer.class);
-        MigrationCachePlan cachePlan = new MigrationCachePlan(src, mCfg.cacheSelection(), cacheTransformer, log);
+        MigrationCachePlan cachePlan = new MigrationCachePlan(
+            () -> CacheConfigurationsTransferrer.sourceCaches(src), mCfg.cacheMigration(), cacheTransformer, log);
 
         for (MigrationCategory category : compatibleCategories.keySet()) {
             switch (category) {
@@ -157,7 +159,7 @@ public class IgniteToIgniteMigration {
                     break;
 
                 case CACHE_CONFIGURATION:
-                    run(new CacheConfigurationsTransferrer(srcOrigin, destOrigin, log, mCfg.cacheConfigurations(),
+                    run(new CacheConfigurationsTransferrer(src, log, mCfg.cacheMigration(),
                         cachePlan), to, compatibleCategories, cacheTransformer);
 
                     break;
@@ -201,12 +203,20 @@ public class IgniteToIgniteMigration {
 
         MigrationTransformer<MigrationCache> cacheTransformer =
             mCfg.transformer(CacheConfigurationsTransferrer.class);
+        mCfg.cacheMigration().supportsDataStructures(false);
+
         MigrationCachePlan cachePlan;
 
-        if (srcOrigin instanceof IgniteEx)
-            cachePlan = new MigrationCachePlan((IgniteEx)srcOrigin, mCfg.cacheSelection(), cacheTransformer, false, log);
-        else
-            cachePlan = new MigrationCachePlan((IgniteClient)srcOrigin, mCfg.cacheSelection(), cacheTransformer, log);
+        if (srcOrigin instanceof IgniteEx) {
+            cachePlan = new MigrationCachePlan(
+                () -> CacheConfigurationsTransferrer.sourceCaches((IgniteEx)srcOrigin), mCfg.cacheMigration(),
+                cacheTransformer, log);
+        }
+        else {
+            cachePlan = new MigrationCachePlan(
+                () -> ThinClientCacheConfigurationsTransferrer.sourceCaches((IgniteClient)srcOrigin),
+                mCfg.cacheMigration(), cacheTransformer, log);
+        }
 
         for (MigrationCategory category : compatibleCategories.keySet()) {
             switch (category) {
@@ -239,8 +249,14 @@ public class IgniteToIgniteMigration {
                     break;
 
                 case CACHE_CONFIGURATION:
-                    run(new CacheConfigurationsTransferrer(srcOrigin, destOrigin, log, mCfg.cacheConfigurations(),
-                        cachePlan), to, compatibleCategories, cacheTransformer);
+                    if (srcOrigin instanceof IgniteClient) {
+                        run(new ThinClientCacheConfigurationsTransferrer((IgniteClient)srcOrigin,
+                            log, mCfg.cacheMigration(), cachePlan), to, compatibleCategories, cacheTransformer);
+                    }
+                    else {
+                        run(new CacheConfigurationsTransferrer((IgniteEx)srcOrigin,
+                            log, mCfg.cacheMigration(), cachePlan), to, compatibleCategories, cacheTransformer);
+                    }
 
                     break;
 

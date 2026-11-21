@@ -34,8 +34,7 @@ import org.apache.ignite.configuration.ClientConfiguration;
 import org.apache.ignite.configuration.IgniteConfiguration;
 import org.apache.ignite.internal.util.typedef.X;
 import org.apache.ignite.internal.util.typedef.internal.U;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsMigrationConfiguration;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheSelectionConfiguration;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheMigrationConfiguration;
 import org.apache.ignite.util.migration.category.cache.data.CacheDataMigrationConfiguration;
 import org.apache.ignite.util.migration.endpoint.ThickClientMigrationEndpoint;
 import org.apache.ignite.util.migration.endpoint.ThinClientMigrationEndpoint;
@@ -238,11 +237,10 @@ public class IgniteToIgniteMigrationCommandLine {
             .noBinaryMetadataCreate(options.containsKey("no-binary-metadata-create") || options.containsKey("no-binary-metdata-create"))
             .noMappingsCreate(options.containsKey("no-mappings-create"));
 
-        cfg.cacheConfigurations()
+        cfg.cacheMigration()
             .noCacheCreate(options.containsKey("no-cache-create"))
-            .createCacheIfNotExists(options.containsKey("create-cache-if-not-exists"));
-
-        cfg.cacheSelection().moveDataStructures(bool(options, "move-data-structures", true));
+            .createCacheIfNotExists(options.containsKey("create-cache-if-not-exists"))
+            .moveDataStructures(bool(options, "move-data-structures", true));
 
         cfg.metastorage().ignoreDefaultFilter(options.containsKey("ignore-default-filter"));
 
@@ -261,7 +259,7 @@ public class IgniteToIgniteMigrationCommandLine {
             cfg.cacheData().writeThreads(integer(options, "write-threads", 0));
 
         if (options.containsKey("cache-group-names"))
-            cfg.cacheSelection().cacheGroupNames(options.get("cache-group-names").split(",", -1));
+            cfg.cacheMigration().cacheGroupNames(options.get("cache-group-names").split(",", -1));
 
         configureDataStreamer(options, cfg);
 
@@ -460,10 +458,10 @@ public class IgniteToIgniteMigrationCommandLine {
             BiFunction<IgniteConfiguration, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> fn =
                 (BiFunction<IgniteConfiguration, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>>)transformer;
 
-            cfg.cacheSelection().cacheConfigurationTransformer(cache -> fn.apply(destCfg, cache));
+            cfg.cacheMigration().cacheConfigurationTransformer(cache -> fn.apply(destCfg, cache));
         }
         else if (transformer instanceof Function)
-            cfg.cacheSelection().cacheConfigurationTransformer(
+            cfg.cacheMigration().cacheConfigurationTransformer(
                 (Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>>)transformer);
         else
             throw new IllegalArgumentException("Cache transformer must implement Function or BiFunction.");
@@ -496,24 +494,22 @@ public class IgniteToIgniteMigrationCommandLine {
         if (!options.containsKey("no-mappings-create"))
             target.setNoMappingsCreate(xml.isNoMappingsCreate());
 
-        CacheConfigurationsMigrationConfiguration srcCfg = xml.getCacheConfigurations();
+        CacheMigrationConfiguration srcSel = xml.getCacheMigration();
 
         if (!options.containsKey("no-cache-create"))
-            target.cacheConfigurations().noCacheCreate(srcCfg.isNoCacheCreate());
+            target.cacheMigration().noCacheCreate(srcSel.isNoCacheCreate());
 
         if (!options.containsKey("create-cache-if-not-exists"))
-            target.cacheConfigurations().createCacheIfNotExists(srcCfg.isCreateCacheIfNotExists());
-
-        CacheSelectionConfiguration srcSel = xml.getCacheSelection();
+            target.cacheMigration().createCacheIfNotExists(srcSel.isCreateCacheIfNotExists());
 
         if (!options.containsKey("move-data-structures"))
-            target.cacheSelection().moveDataStructures(srcSel.isMoveDataStructures());
+            target.cacheMigration().moveDataStructures(srcSel.isMoveDataStructures());
 
         if (!options.containsKey("cache-group-names"))
-            target.cacheSelection().cacheGroupNames(srcSel.getCacheGroupNames().toArray(new String[0]));
+            target.cacheMigration().cacheGroupNames(srcSel.getCacheGroupNames().toArray(new String[0]));
 
         if (!options.containsKey("cache-config-transformer"))
-            target.cacheSelection().cacheConfigurationTransformer(srcSel.getCacheConfigurationTransformer());
+            target.cacheMigration().cacheConfigurationTransformer(srcSel.getCacheConfigurationTransformer());
 
         if (!options.containsKey("ignore-default-filter"))
             target.metastorage().ignoreDefaultFilter(xml.getMetastorage().isIgnoreDefaultFilter());

@@ -23,8 +23,7 @@ import java.util.Objects;
 import java.util.stream.Collectors;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.logger.java.JavaLogger;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsMigrationConfiguration;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheSelectionConfiguration;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheMigrationConfiguration;
 import org.apache.ignite.util.migration.category.cache.data.CacheDataMigrationConfiguration;
 import org.apache.ignite.util.migration.category.metastorage.MetastorageMigrationConfiguration;
 
@@ -34,10 +33,7 @@ import org.apache.ignite.util.migration.category.metastorage.MetastorageMigratio
  */
 public class IgniteToIgniteMigrationConfiguration {
     /** Shared cache selection and name mapping. */
-    private final CacheSelectionConfiguration cacheSelection = new CacheSelectionConfiguration();
-
-    /** */
-    private final CacheConfigurationsMigrationConfiguration cacheConfigurations = new CacheConfigurationsMigrationConfiguration();
+    private final CacheMigrationConfiguration cacheMigration = new CacheMigrationConfiguration();
 
     /** */
     private final CacheDataMigrationConfiguration cacheData = new CacheDataMigrationConfiguration();
@@ -61,19 +57,13 @@ public class IgniteToIgniteMigrationConfiguration {
      * Validates shared and all category settings before either connection is opened.
      */
     public void validate() {
-        cacheSelection.validate();
-        cacheConfigurations.validate();
+        cacheMigration.validate();
         cacheData.validate();
     }
 
     /** @return Shared cache selection and name mapping. */
-    public CacheSelectionConfiguration cacheSelection() {
-        return cacheSelection;
-    }
-
-    /** @return Destination cache creation policy. */
-    public CacheConfigurationsMigrationConfiguration cacheConfigurations() {
-        return cacheConfigurations;
+    public CacheMigrationConfiguration cacheMigration() {
+        return cacheMigration;
     }
 
     /** @return Data transfer knobs. */
@@ -164,13 +154,8 @@ public class IgniteToIgniteMigrationConfiguration {
     }
 
     /** @return Shared cache selection and name mapping. */
-    public CacheSelectionConfiguration getCacheSelection() {
-        return cacheSelection;
-    }
-
-    /** @return Destination cache creation policy. */
-    public CacheConfigurationsMigrationConfiguration getCacheConfigurations() {
-        return cacheConfigurations;
+    public CacheMigrationConfiguration getCacheMigration() {
+        return cacheMigration;
     }
 
     /** @return Data transfer knobs. */

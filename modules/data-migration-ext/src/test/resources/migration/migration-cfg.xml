@@ -24,15 +24,15 @@
         <property name="noBinaryMetadataCreate" value="true"/>
         <property name="noMappingsCreate" value="true"/>
 
-        <property name="cacheSelection.moveDataStructures" value="false"/>
-        <property name="cacheSelection.cacheGroupNames">
+        <property name="cacheMigration.moveDataStructures" value="false"/>
+        <property name="cacheMigration.cacheGroupNames">
             <list>
                 <value>grp1</value>
                 <value>grp2</value>
             </list>
         </property>
 
-        <property name="cacheConfigurations.createCacheIfNotExists" value="true"/>
+        <property name="cacheMigration.createCacheIfNotExists" value="true"/>
 
         <property name="cacheData.batchSize" value="256"/>
         <property name="cacheData.readThreads" value="4"/>

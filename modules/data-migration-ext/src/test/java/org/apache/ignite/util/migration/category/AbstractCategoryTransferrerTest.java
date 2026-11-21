@@ -70,8 +70,7 @@ public class AbstractCategoryTransferrerTest {
         }
 
         /** {@inheritDoc} */
-        @Override protected void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<String> transformer)
-            throws IgniteCheckedException {
+        @Override protected void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<String> transformer) {
             sourceThread.set(Thread.currentThread());
             transferEntity(dest, transformer, "first");
             transferEntity(dest, transformer, "second");

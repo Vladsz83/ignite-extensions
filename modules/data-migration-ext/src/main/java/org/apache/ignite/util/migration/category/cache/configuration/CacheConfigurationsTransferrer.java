@@ -17,6 +17,8 @@
 
 package org.apache.ignite.util.migration.category.cache.configuration;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
@@ -25,50 +27,47 @@ import org.apache.ignite.cache.CacheExistsException;
 import org.apache.ignite.cache.affinity.rendezvous.RendezvousAffinityFunction;
 import org.apache.ignite.client.ClientCacheConfiguration;
 import org.apache.ignite.client.IgniteClient;
+import org.apache.ignite.cache.QueryEntity;
+import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.IgniteEx;
+import org.apache.ignite.internal.processors.cache.CacheType;
 import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
+import org.apache.ignite.internal.processors.query.QueryEntityEx;
+import org.apache.ignite.internal.util.typedef.internal.U;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 
-/** Transfers selected cache configurations through thick or thin clients. */
-public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<Object, MigrationCache> {
-    /** Destination connection. */
-    private final Object to;
-
+/** Transfers selected cache configurations from a thick-client source. */
+public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<IgniteEx, MigrationCache> {
     /** */
-    private final CacheConfigurationsMigrationConfiguration cfg;
+    private final CacheMigrationConfiguration cfg;
 
     /** */
     private final MigrationCachePlan cachePlan;
 
     /**
-     * @param from Connected source.
-     * @param to Connected destination.
+     * @param from Source.
      * @param log Logger.
      * @param cfg Destination cache creation policy.
      * @param cachePlan Cache selection for this migration.
      */
     public CacheConfigurationsTransferrer(
-        Object from,
-        Object to,
+        IgniteEx from,
         IgniteLogger log,
-        CacheConfigurationsMigrationConfiguration cfg,
+        CacheMigrationConfiguration cfg,
         MigrationCachePlan cachePlan
     ) {
         super(from, MigrationCategory.CACHE_CONFIGURATION, MigrationCache.class, log);
 
-        this.to = to;
         this.cfg = cfg;
         this.cachePlan = cachePlan;
     }
 
     /** {@inheritDoc} */
     @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<MigrationCache> transformer) {
-        Object src = this.src;
         List<MigrationCache> caches = cachePlan.caches();
-        Object destOrigin = to;
 
         if (caches.isEmpty()) {
             info("No caches selected for cache configuration migration.");
@@ -76,12 +75,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<
             return;
         }
 
-        if (!(src instanceof IgniteEx) && !(src instanceof IgniteClient))
-            throw new IgniteException("Unsupported cache configuration source: " + src.getClass().getName());
-
-        if (src instanceof IgniteClient)
-            warn("Thin source exposes only ClientCacheConfiguration; SQL-created flags and unsupported cache " +
-                "properties cannot be copied exactly.");
+        Object destOrigin = dest.connect();
 
         if (destOrigin instanceof IgniteClient)
             warn("Thin destination supports only ClientCacheConfiguration properties; unsupported source cache " +
@@ -99,7 +93,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<
             if (destOrigin instanceof IgniteEx)
                 action = createOrValidateCache((IgniteEx)destOrigin, cache, cfg);
             else if (destOrigin instanceof IgniteClient)
-                action = createOrValidateThinCache((IgniteClient)destOrigin, cache);
+                action = createOrValidateThinCache((IgniteClient)destOrigin, cache, cfg);
             else
                 throw new IgniteException("Unsupported cache configuration destination: " +
                     destOrigin.getClass().getName());
@@ -112,7 +106,7 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<
 
     /** */
     static String createOrValidateCache(IgniteEx ig, MigrationCache cache,
-        CacheConfigurationsMigrationConfiguration cfg) {
+        CacheMigrationConfiguration cfg) {
         String name = cache.configuration().getName();
         DynamicCacheDescriptor desc = ig.context().cache().cacheDescriptor(name);
 
@@ -152,8 +146,9 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<
         }
     }
 
-    /** Creates or validates a cache through the thin-client API. */
-    private String createOrValidateThinCache(IgniteClient client, MigrationCache cache) {
+    /** */
+    static String createOrValidateThinCache(IgniteClient client, MigrationCache cache,
+        CacheMigrationConfiguration cfg) {
         String name = cache.configuration().getName();
         boolean exists = client.cacheNames().contains(name);
 
@@ -186,4 +181,44 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<
         }
     }
 
+    /** Reads cache definitions from a thick-client source. */
+    public static List<MigrationCache> sourceCaches(IgniteEx ig) {
+        List<MigrationCache> res = new ArrayList<>();
+
+        for (DynamicCacheDescriptor desc : ig.context().cache().cacheDescriptors().values()) {
+            if (desc.cacheType() != CacheType.USER && desc.cacheType() != CacheType.DATA_STRUCTURES)
+                continue;
+
+            CacheConfiguration<?, ?> cacheCfg = new CacheConfiguration<>(desc.cacheConfiguration());
+
+            cacheCfg.clearQueryEntities();
+            cacheCfg.setQueryEntities(desc.schema().entities());
+
+            try {
+                cacheCfg = U.unmarshal(ig.context(), U.marshal(ig.context(), cacheCfg),
+                    CacheConfigurationsTransferrer.class.getClassLoader());
+            }
+            catch (IgniteCheckedException e) {
+                throw new IgniteException("Failed to copy cache configuration: " + cacheCfg.getName() + '.', e);
+            }
+
+            for (QueryEntity entity : cacheCfg.getQueryEntities()) {
+                if (entity instanceof QueryEntityEx) {
+                    QueryEntityEx ex = (QueryEntityEx)entity;
+
+                    if (Integer.valueOf(-1).equals(ex.getPrimaryKeyInlineSize()))
+                        ex.setPrimaryKeyInlineSize(null);
+
+                    if (Integer.valueOf(-1).equals(ex.getAffinityKeyInlineSize()))
+                        ex.setAffinityKeyInlineSize(null);
+                }
+            }
+
+            res.add(new MigrationCache(cacheCfg.getName(), cacheCfg, desc.sql(), desc.cacheType()));
+        }
+
+        res.sort(Comparator.comparing(MigrationCache::sourceName));
+
+        return res;
+    }
 }
