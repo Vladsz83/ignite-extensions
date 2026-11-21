@@ -75,7 +75,7 @@ import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCachePlan;
+import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
 
 import static org.apache.ignite.internal.processors.cache.query.GridCacheQueryType.SCAN;
 import static org.apache.ignite.plugin.security.SecurityPermission.CACHE_READ;
@@ -89,7 +89,10 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     private final CacheDataMigrationConfiguration cfg;
 
     /** */
-    private final MigrationCachePlan cachePlan;
+    private final List<MigrationCache> caches;
+
+    /** Source cache name to destination cache name. */
+    private final Map<String, String> cacheNameMap;
 
     /** Source cache to partition number. */
     private final Queue<Map.Entry<String, Integer>> pending = new ConcurrentLinkedQueue<>();
@@ -141,16 +144,16 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
      * @param to Connected destination.
      * @param log Logger.
      * @param cfg Data transfer knobs.
-     * @param cachePlan Cache selection for this migration.
+     * @param caches Selected and transformed cache definitions.
      */
     public CacheDataTransferrer(
         Object from,
         Object to,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
-        MigrationCachePlan cachePlan
+        List<MigrationCache> caches
     ) {
-        this(from, to, log, cfg, cachePlan, false, false);
+        this(from, to, log, cfg, caches, false, false);
     }
 
     /**
@@ -158,7 +161,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
      * @param to Connected destination.
      * @param log Logger.
      * @param cfg Data transfer knobs.
-     * @param cachePlan Cache selection for this migration.
+     * @param caches Selected and transformed cache definitions.
      * @param noBinaryMetadataCreate Whether binary metadata creation is disabled.
      * @param noMappingsCreate Whether mapping registration is disabled.
      */
@@ -167,7 +170,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         Object to,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
-        MigrationCachePlan cachePlan,
+        List<MigrationCache> caches,
         boolean noBinaryMetadataCreate,
         boolean noMappingsCreate
     ) {
@@ -175,7 +178,14 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
 
         this.to = to;
         this.cfg = cfg;
-        this.cachePlan = cachePlan;
+        this.caches = caches;
+
+        Map<String, String> nameMap = new LinkedHashMap<>(caches.size());
+
+        for (MigrationCache c : caches)
+            nameMap.put(c.sourceName(), c.configuration().getName());
+
+        this.cacheNameMap = Collections.unmodifiableMap(nameMap);
         this.noBinaryMetadataCreate = noBinaryMetadataCreate;
         this.noMappingsCreate = noMappingsCreate;
         batches = new ArrayBlockingQueue<>(cfg.queueCapacity());
@@ -185,15 +195,12 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(
-        MigrationDestination dest,
-        MigrationTransformer<MigrationEntry> transformer
-    ) {
+    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<MigrationEntry> transformer) {
         Object src = this.src;
         Object destOrigin = to;
 
         if (!(src instanceof IgniteEx) || !(destOrigin instanceof IgniteEx)) {
-            new ThinClientCacheDataTransferrer(src, destOrigin, dest, log, cfg, cachePlan, this,
+            new ThinClientCacheDataTransferrer(src, destOrigin, dest, log, cfg, caches, this,
                 noBinaryMetadataCreate, noMappingsCreate).transfer(transformer);
 
             return;
@@ -202,7 +209,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         srcIg = (IgniteEx)src;
         destIg = (IgniteEx)destOrigin;
 
-        Map<String, String> cacheNames = cachePlan.cacheNames();
+        Map<String, String> cacheNames = cacheNameMap;
         List<Map.Entry<String, Integer>> parts = partitions(srcIg, cacheNames.keySet());
 
         pending.addAll(parts);
@@ -214,15 +221,13 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         info("Cache data worker pools [readers=" + workers.readerThreads() + ", readerPool=dedicated, writers=" +
             workers.writerThreads() + ", writerPool=dedicated].");
 
-        int threads = workers.readerThreads() + workers.writerThreads();
-        BlockingQueue<Future<Void>> completed = new LinkedBlockingQueue<>();
-        ExecutorCompletionService<Void> readerCompletion =
-            new ExecutorCompletionService<>(workers.readerPool(), completed);
-        ExecutorCompletionService<Void> writerCompletion =
-            new ExecutorCompletionService<>(workers.writerPool(), completed);
-        ScheduledExecutorService reporter = Executors.newSingleThreadScheduledExecutor(
-            new IgniteThreadFactory(null, "data-migration-log"));
         boolean success = false;
+        BlockingQueue<Future<Void>> completed = new LinkedBlockingQueue<>();
+
+        ExecutorCompletionService<Void> readerCompletion = new ExecutorCompletionService<>(workers.readerPool(), completed);
+        ExecutorCompletionService<Void> writerCompletion = new ExecutorCompletionService<>(workers.writerPool(), completed);
+
+        ScheduledExecutorService reporter = Executors.newSingleThreadScheduledExecutor(new IgniteThreadFactory(null, "data-migration-log"));
 
         try {
             reporter.scheduleAtFixedRate(this::logProgress, 1, 1, TimeUnit.MINUTES);
@@ -233,7 +238,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
             for (int i = 0; i < workers.readerThreads(); i++)
                 readerCompletion.submit(() -> read(transformer));
 
-            for (int i = 0; i < threads; i++)
+            for (int i = 0; i < workers.readerThreads() + workers.writerThreads(); i++)
                 completed.take().get();
 
             success = true;
@@ -342,7 +347,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         List<MigrationEntry> batch = new ArrayList<>(cfg.batchSize());
         String cache = task.getKey();
         int part = task.getValue();
-        String destCache = cachePlan.cacheNames().get(cache);
+        String destCache = cacheNameMap.get(cache);
 
         info("Reading partition [cache=" + cache + ", partition=" + part + "].");
 
@@ -451,7 +456,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
                 ctx.checkSecurity(CACHE_READ);
 
                 if (ctx.topology().lostPartitions().contains(part))
-                    throw new IgniteException("Source partition is lost: " + part + '.');
+                    throw new IgniteException("Source partition is lost [partition=" + part + "].");
 
                 ClusterNode primary = ig.affinity(cache).mapPartitionToNode(part);
                 CacheQuery<MigrationEntry> qry = ctx.queries().createScanQuery(null,
@@ -469,7 +474,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
                     }, true);
             }
             catch (IgniteCheckedException e) {
-                throw new IgniteException("Failed to scan source partition: " + cache + '.', e);
+                throw new IgniteException("Failed to scan source partition [cache=" + cache + "].", e);
             }
             finally {
                 ctx.gate().leave(prev);
@@ -534,7 +539,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
                     ctx.versions().next(ctx.affinity().affinityTopologyVersion().topologyVersion());
 
                 if (ver == null)
-                    throw new IgniteException("Missing source conflict version for cache: " + name + '.');
+                    throw new IgniteException("Missing source conflict version [cache=" + name + "].");
 
                 ver = ver.conflictVersion();
 
@@ -590,8 +595,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     private static Object dataStructureValue(GridCacheContext<?, ?> ctx, Object val) {
         long gridStartTime = ctx.discovery().gridStartTime();
 
-        if (val instanceof GridCacheCountDownLatchValue) {
-            GridCacheCountDownLatchValue latch = (GridCacheCountDownLatchValue)val;
+        if (val instanceof GridCacheCountDownLatchValue latch) {
             GridCacheCountDownLatchValue res = new GridCacheCountDownLatchValue(latch.initialCount(),
                 latch.autoDelete(), gridStartTime);
 
@@ -600,9 +604,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
             return res;
         }
 
-        if (val instanceof GridCacheSemaphoreState) {
-            GridCacheSemaphoreState sem = (GridCacheSemaphoreState)val;
-
+        if (val instanceof GridCacheSemaphoreState sem) {
             if (sem.getWaiters() != null && sem.getWaiters().values().stream().anyMatch(cnt -> cnt != 0))
                 throw new IgniteException("Cannot migrate a semaphore with acquired permits.");
 
@@ -614,9 +616,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
             return res;
         }
 
-        if (val instanceof GridCacheLockState) {
-            GridCacheLockState lock = (GridCacheLockState)val;
-
+        if (val instanceof GridCacheLockState lock) {
             if (lock.get() != 0 || !lock.getNodes().isEmpty() ||
                 lock.getConditionMap().values().stream().anyMatch(nodes -> !nodes.isEmpty()) ||
                 lock.getSignals() != null && lock.getSignals().values().stream().anyMatch(signals -> !signals.isEmpty()))
@@ -640,7 +640,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
             ig.context().cache().getOrStartCache(name);
         }
         catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to open migration cache: " + name + '.', e);
+            throw new IgniteException("Failed to open migration cache [cache=" + name + "].", e);
         }
     }
 

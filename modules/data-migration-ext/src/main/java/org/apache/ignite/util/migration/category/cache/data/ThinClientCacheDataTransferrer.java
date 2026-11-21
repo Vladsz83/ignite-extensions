@@ -64,7 +64,6 @@ import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCachePlan;
 import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
 import org.jetbrains.annotations.Nullable;
 
@@ -88,7 +87,7 @@ final class ThinClientCacheDataTransferrer {
     private final CacheDataMigrationConfiguration cfg;
 
     /** Cache selection and name mapping. */
-    private final MigrationCachePlan cachePlan;
+    private final List<MigrationCache> caches;
 
     /** Thick cache transferrer supplying the primary-partition scan implementation. */
     private final CacheDataTransferrer thickProvider;
@@ -133,12 +132,12 @@ final class ThinClientCacheDataTransferrer {
     private final BasicRateLimiter writeLimiter;
 
     /**
-     * @param from Source connection.
-     * @param to Destination connection.
+     * @param from Source.
+     * @param to Destination.
      * @param toEndpoint Destination endpoint.
      * @param log Logger.
      * @param cfg Data transfer settings.
-     * @param cachePlan Cache selection and mapping.
+     * @param caches Selected and transformed cache definitions.
      * @param thickProvider Existing cache-data provider.
      * @param noBinaryMetadataCreate Whether binary metadata creation is disabled.
      * @param noMappingsCreate Whether mapping registration is disabled.
@@ -149,7 +148,7 @@ final class ThinClientCacheDataTransferrer {
         MigrationDestination toEndpoint,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
-        MigrationCachePlan cachePlan,
+        List<MigrationCache> caches,
         CacheDataTransferrer thickProvider,
         boolean noBinaryMetadataCreate,
         boolean noMappingsCreate
@@ -159,7 +158,7 @@ final class ThinClientCacheDataTransferrer {
         this.toEndpoint = toEndpoint;
         this.log = log;
         this.cfg = cfg;
-        this.cachePlan = cachePlan;
+        this.caches = caches;
         this.thickProvider = thickProvider;
         this.noBinaryMetadataCreate = noBinaryMetadataCreate;
         this.noMappingsCreate = noMappingsCreate;
@@ -171,8 +170,11 @@ final class ThinClientCacheDataTransferrer {
 
     /** Transfers cache records using the public cache APIs of thick or thin clients. */
     void transfer(@Nullable MigrationTransformer<MigrationEntry> transformer) {
-        List<MigrationCache> caches = cachePlan.caches();
-        Map<String, String> names = cachePlan.cacheNames();
+        Map<String, String> names = new LinkedHashMap<>(caches.size());
+
+        for (MigrationCache c : caches)
+            names.put(c.sourceName(), c.configuration().getName());
+
         Object src = from;
         Object dest = to;
 
@@ -195,9 +197,9 @@ final class ThinClientCacheDataTransferrer {
 
         ConcurrentLinkedQueue<ReadTask> pending = new ConcurrentLinkedQueue<>();
 
-        if (src instanceof IgniteEx) {
+        if (src instanceof IgniteEx ig) {
             for (Map.Entry<String, Integer> part : CacheDataTransferrer.partitions(
-                (IgniteEx)src, names.keySet()))
+                ig, names.keySet()))
                 pending.add(new ReadTask(part.getKey(), names.get(part.getKey()), part.getValue()));
         }
         else {
@@ -305,13 +307,13 @@ final class ThinClientCacheDataTransferrer {
 
                 MigrationEntry item;
 
-                if (rawEntry instanceof MigrationEntry)
-                    item = (MigrationEntry)rawEntry;
+                if (rawEntry instanceof MigrationEntry entry)
+                    item = entry;
                 else {
                     @SuppressWarnings("unchecked")
-                    Cache.Entry<Object, Object> entry = (Cache.Entry<Object, Object>)rawEntry;
+                    Cache.Entry<Object, Object> cacheEntry = (Cache.Entry<Object, Object>)rawEntry;
 
-                    item = new MigrationEntry(entry.getKey(), entry.getValue(), 0, null);
+                    item = new MigrationEntry(cacheEntry.getKey(), cacheEntry.getValue(), 0, null);
                 }
 
                 if (transformer != null)
@@ -365,27 +367,26 @@ final class ThinClientCacheDataTransferrer {
         if (val == null || !visited.add(val))
             return;
 
-        if (val instanceof BinaryObject) {
-            BinaryObject binary = (BinaryObject)val;
+        if (val instanceof BinaryObject binary) {
             BinaryType type = binary instanceof BinaryObjectEx ? ((BinaryObjectEx)binary).rawType() : binary.type();
 
             if (type == null)
                 return;
 
-            if (type instanceof BinaryTypeImpl)
-                registerBinaryType((BinaryTypeImpl)type);
+            if (type instanceof BinaryTypeImpl impl)
+                registerBinaryType(impl);
 
             for (String field : type.fieldNames())
                 registerBinaryValue(binary.field(field), visited);
         }
-        else if (val instanceof Map) {
-            for (Map.Entry<?, ?> entry : ((Map<?, ?>)val).entrySet()) {
+        else if (val instanceof Map<?, ?> map) {
+            for (Map.Entry<?, ?> entry : map.entrySet()) {
                 registerBinaryValue(entry.getKey(), visited);
                 registerBinaryValue(entry.getValue(), visited);
             }
         }
-        else if (val instanceof Iterable) {
-            for (Object item : (Iterable<?>)val)
+        else if (val instanceof Iterable<?> iterable) {
+            for (Object item : iterable)
                 registerBinaryValue(item, visited);
         }
         else if (val.getClass().isArray() && !val.getClass().getComponentType().isPrimitive()) {
@@ -432,8 +433,8 @@ final class ThinClientCacheDataTransferrer {
     private MigrationTypeMapping sourceTypeMapping(int typeId, String typeName) {
         Object src = from;
 
-        if (src instanceof IgniteEx) {
-            List<Map<Integer, MappedName>> mappings = ((IgniteEx)src).context().marshallerContext().getCachedMappings();
+        if (src instanceof IgniteEx ig) {
+            List<Map<Integer, MappedName>> mappings = ig.context().marshallerContext().getCachedMappings();
 
             for (int platform = 0; platform < mappings.size(); platform++) {
                 MappedName name = mappings.get(platform).get(typeId);
@@ -484,14 +485,14 @@ final class ThinClientCacheDataTransferrer {
         ScanQuery<Object, Object> qry = new ScanQuery<>().setPageSize(cfg.batchSize());
 
         try {
-            if (src instanceof IgniteEx)
-                return ((IgniteEx)src).<Object, Object>cache(name).withKeepBinary().query(qry);
+            if (src instanceof IgniteEx ig)
+                return ig.<Object, Object>cache(name).withKeepBinary().query(qry);
 
-            if (src instanceof IgniteClient)
-                return ((IgniteClient)src).<Object, Object>cache(name).withKeepBinary().query(qry);
+            if (src instanceof IgniteClient client)
+                return client.<Object, Object>cache(name).withKeepBinary().query(qry);
         }
         catch (RuntimeException e) {
-            throw new IgniteCheckedException("Failed to open source cache cursor: " + name + '.', e);
+            throw new IgniteCheckedException("Failed to open source cache cursor [cache=" + name + "].", e);
         }
 
         throw new IgniteCheckedException("Unsupported thin-client migration source: " + src.getClass().getName());
@@ -522,8 +523,8 @@ final class ThinClientCacheDataTransferrer {
             for (MigrationEntry entry : entries)
                 values.put(entry.key(), entry.value());
 
-            if (dest instanceof IgniteClient) {
-                writeThinClientBatch((IgniteClient)dest, name, entries, values);
+            if (dest instanceof IgniteClient client) {
+                writeThinClientBatch(client, name, entries, values);
 
                 return;
             }

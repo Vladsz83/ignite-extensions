@@ -17,11 +17,14 @@
 
 package org.apache.ignite.util.migration;
 
+import java.util.Collection;
 import java.util.HashSet;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
@@ -31,7 +34,6 @@ import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsTransferrer;
 import org.apache.ignite.util.migration.category.cache.configuration.ThinClientCacheConfigurationsTransferrer;
 import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCachePlan;
 import org.apache.ignite.util.migration.category.cache.data.CacheDataTransferrer;
 import org.apache.ignite.util.migration.category.metastorage.MetastorageTransferrer;
 import org.apache.ignite.util.migration.category.type.BinaryMetadataTransferrer;
@@ -64,7 +66,7 @@ public class IgniteToIgniteMigration {
                 from.getClass().getName() + ", destinationEndpoint=" + to.getClass().getName() +
                 ", sourceCategories=" + from.supportedCategories() +
                 ", destinationCategories=" + to.supportedCategories() +
-                ", cacheGroups=" + mCfg.cacheMigration().getCacheGroupNames() +
+                ", cacheGroups=" + mCfg.cacheMigration().cacheGroupNames() +
                 ", moveDataStructures=" + mCfg.cacheMigration().moveDataStructures() +
                 ", cacheConfigTransformer=" +
                 mCfg.cacheMigration().cacheConfigurationTransformer().getClass().getName() +
@@ -92,15 +94,17 @@ public class IgniteToIgniteMigration {
             Object srcOrigin = from.connect();
             Object destOrigin = to.connect();
 
-            if (log.isInfoEnabled())
+            if (log.isInfoEnabled()) {
                 log.info("Connected migration endpoints [source=" + srcOrigin.getClass().getSimpleName() +
                     ", destination=" + destOrigin.getClass().getSimpleName() + "].");
+            }
 
             runPipeline(from, to, srcOrigin, destOrigin, mCfg);
 
-            if (log.isInfoEnabled())
+            if (log.isInfoEnabled()) {
                 log.info("Data migration completed [elapsedMs=" +
                     TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + "].");
+            }
         }
         catch (RuntimeException | Error e) {
             log.error("Data migration failed", e);
@@ -139,28 +143,30 @@ public class IgniteToIgniteMigration {
         // Cache selection and name mapping are needed even when cache creation is disabled.
         MigrationTransformer<MigrationCache> cacheTransformer =
             mCfg.transformer(CacheConfigurationsTransferrer.class);
-        MigrationCachePlan cachePlan = new MigrationCachePlan(
-            () -> CacheConfigurationsTransferrer.sourceCaches(src), mCfg.cacheMigration(), cacheTransformer, log);
+        List<MigrationCache> caches = mCfg.cacheMigration().prepare(
+            () -> CacheConfigurationsTransferrer.sourceCaches(src), dest, true, cacheTransformer, log);
 
         for (MigrationCategory category : compatibleCategories.keySet()) {
             switch (category) {
                 case BINARY_METADATA:
-                    if (!mCfg.noBinaryMetadataCreate())
+                    if (!mCfg.noBinaryMetadataCreate()) {
                         run(new BinaryMetadataTransferrer(src, log), to, compatibleCategories,
                             mCfg.transformer(BinaryMetadataTransferrer.class));
+                    }
 
                     break;
 
                 case TYPE_MAPPING:
-                    if (!mCfg.noMappingsCreate())
+                    if (!mCfg.noMappingsCreate()) {
                         run(new TypeMappingsTransferrer(src, log), to, compatibleCategories,
                             mCfg.transformer(TypeMappingsTransferrer.class));
+                    }
 
                     break;
 
                 case CACHE_CONFIGURATION:
-                    run(new CacheConfigurationsTransferrer(src, log, mCfg.cacheMigration(),
-                        cachePlan), to, compatibleCategories, cacheTransformer);
+                    run(new CacheConfigurationsTransferrer(src, dest, log, mCfg.cacheMigration(),
+                        caches), to, compatibleCategories, cacheTransformer);
 
                     break;
 
@@ -171,14 +177,14 @@ public class IgniteToIgniteMigration {
                     break;
 
                 case CACHE_ENTRY:
-                    run(new CacheDataTransferrer(srcOrigin, destOrigin, log, mCfg.cacheData(), cachePlan,
+                    run(new CacheDataTransferrer(srcOrigin, destOrigin, log, mCfg.cacheData(), caches,
                         mCfg.noBinaryMetadataCreate(), mCfg.noMappingsCreate()), to, compatibleCategories,
                         mCfg.transformer(CacheDataTransferrer.class));
 
                     break;
 
                 default:
-                    throw new IgniteException("Unsupported migration category: " + category + '.');
+                    throw new IgniteException("Unsupported migration category [" + category + "].");
             }
         }
     }
@@ -203,27 +209,21 @@ public class IgniteToIgniteMigration {
 
         MigrationTransformer<MigrationCache> cacheTransformer =
             mCfg.transformer(CacheConfigurationsTransferrer.class);
-        mCfg.cacheMigration().supportsDataStructures(false);
 
-        MigrationCachePlan cachePlan;
-
-        if (srcOrigin instanceof IgniteEx) {
-            cachePlan = new MigrationCachePlan(
-                () -> CacheConfigurationsTransferrer.sourceCaches((IgniteEx)srcOrigin), mCfg.cacheMigration(),
-                cacheTransformer, log);
-        }
-        else {
-            cachePlan = new MigrationCachePlan(
-                () -> ThinClientCacheConfigurationsTransferrer.sourceCaches((IgniteClient)srcOrigin),
-                mCfg.cacheMigration(), cacheTransformer, log);
-        }
+        java.util.function.Supplier<java.util.Collection<MigrationCache>> sourceCaches =
+            (srcOrigin instanceof IgniteEx src) ?
+                () -> CacheConfigurationsTransferrer.sourceCaches(src) :
+                () -> ThinClientCacheConfigurationsTransferrer.sourceCaches((IgniteClient)srcOrigin);
+        IgniteEx destEx = (destOrigin instanceof IgniteEx) ? (IgniteEx)destOrigin : null;
+        List<MigrationCache> caches = mCfg.cacheMigration().prepare(
+            sourceCaches, destEx, false, cacheTransformer, log);
 
         for (MigrationCategory category : compatibleCategories.keySet()) {
             switch (category) {
                 case BINARY_METADATA:
                     if (!mCfg.noBinaryMetadataCreate()) {
-                        if (srcOrigin instanceof IgniteClient) {
-                            run(new ThinClientBinaryMetadataTransferrer((IgniteClient)srcOrigin, log), to,
+                        if (srcOrigin instanceof IgniteClient client) {
+                            run(new ThinClientBinaryMetadataTransferrer(client, log), to,
                                 compatibleCategories, mCfg.transformer(ThinClientBinaryMetadataTransferrer.class));
                         }
                         else {
@@ -236,8 +236,8 @@ public class IgniteToIgniteMigration {
 
                 case TYPE_MAPPING:
                     if (!mCfg.noMappingsCreate()) {
-                        if (srcOrigin instanceof IgniteClient) {
-                            run(new ThinClientTypeMappingsTransferrer((IgniteClient)srcOrigin, log), to,
+                        if (srcOrigin instanceof IgniteClient client) {
+                            run(new ThinClientTypeMappingsTransferrer(client, log), to,
                                 compatibleCategories, mCfg.transformer(ThinClientTypeMappingsTransferrer.class));
                         }
                         else {
@@ -249,27 +249,27 @@ public class IgniteToIgniteMigration {
                     break;
 
                 case CACHE_CONFIGURATION:
-                    if (srcOrigin instanceof IgniteClient) {
-                        run(new ThinClientCacheConfigurationsTransferrer((IgniteClient)srcOrigin,
-                            log, mCfg.cacheMigration(), cachePlan), to, compatibleCategories, cacheTransformer);
+                    if (destOrigin instanceof IgniteClient client) {
+                        run(new ThinClientCacheConfigurationsTransferrer(srcOrigin, client,
+                            log, mCfg.cacheMigration(), caches), to, compatibleCategories, cacheTransformer);
                     }
                     else {
-                        run(new CacheConfigurationsTransferrer((IgniteEx)srcOrigin,
-                            log, mCfg.cacheMigration(), cachePlan), to, compatibleCategories, cacheTransformer);
+                        run(new CacheConfigurationsTransferrer(srcOrigin, (IgniteEx)destOrigin,
+                            log, mCfg.cacheMigration(), caches), to, compatibleCategories, cacheTransformer);
                     }
 
                     break;
 
                 case CACHE_ENTRY:
-                    run(new CacheDataTransferrer(srcOrigin, destOrigin, log, mCfg.cacheData(), cachePlan,
+                    run(new CacheDataTransferrer(srcOrigin, destOrigin, log, mCfg.cacheData(), caches,
                         mCfg.noBinaryMetadataCreate(), mCfg.noMappingsCreate()), to, compatibleCategories,
                         mCfg.transformer(CacheDataTransferrer.class));
 
                     break;
 
                 default:
-                    throw new IgniteException("Unsupported migration category in thin-client mode: " +
-                        category + '.');
+                    throw new IgniteException("Unsupported migration category in thin-client mode [" +
+                        category + "].");
             }
         }
     }
@@ -360,8 +360,8 @@ public class IgniteToIgniteMigration {
     private static Set<java.util.UUID> serverNodeIds(Object origin) {
         Set<java.util.UUID> res = new HashSet<>();
 
-        if (origin instanceof IgniteEx) {
-            for (ClusterNode node : ((IgniteEx)origin).cluster().forServers().nodes())
+        if (origin instanceof IgniteEx ig) {
+            for (ClusterNode node : ig.cluster().forServers().nodes())
                 res.add(node.id());
         }
         else {

@@ -22,83 +22,102 @@ import java.util.Comparator;
 import java.util.List;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
+import org.apache.ignite.cache.CacheExistsException;
 import org.apache.ignite.cache.affinity.rendezvous.RendezvousAffinityFunction;
 import org.apache.ignite.client.ClientCache;
 import org.apache.ignite.client.ClientCacheConfiguration;
 import org.apache.ignite.client.IgniteClient;
-import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.processors.cache.CacheType;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 
-/** Transfers selected cache configurations from a thin-client source. */
-public class ThinClientCacheConfigurationsTransferrer extends AbstractCategoryTransferrer<IgniteClient, MigrationCache> {
+/** Transfers cache configurations to a thin-client destination. */
+public class ThinClientCacheConfigurationsTransferrer extends AbstractCategoryTransferrer<Object, MigrationCache> {
+    /** Connected thin-client destination. */
+    private final IgniteClient dest;
+
     /** */
     private final CacheMigrationConfiguration cfg;
 
     /** */
-    private final MigrationCachePlan cachePlan;
+    private final List<MigrationCache> caches;
 
     /**
-     * @param from Connected thin-client source.
+     * @param from Connected source (thick or thin).
+     * @param dest Connected thin-client destination.
      * @param log Logger.
-     * @param cfg Destination cache creation policy.
-     * @param cachePlan Cache selection for this migration.
+     * @param cfg Caches migration configuration.
+     * @param caches Selected and transformed cache definitions.
      */
     public ThinClientCacheConfigurationsTransferrer(
-        IgniteClient from,
+        Object from,
+        IgniteClient dest,
         IgniteLogger log,
         CacheMigrationConfiguration cfg,
-        MigrationCachePlan cachePlan
+        List<MigrationCache> caches
     ) {
         super(from, MigrationCategory.CACHE_CONFIGURATION, MigrationCache.class, log);
 
+        this.dest = dest;
         this.cfg = cfg;
-        this.cachePlan = cachePlan;
+        this.caches = caches;
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<MigrationCache> transformer) {
-        List<MigrationCache> caches = cachePlan.caches();
-
+    @Override protected void doTransfer(MigrationDestination destEndpoint, MigrationTransformer<MigrationCache> transformer) {
         if (caches.isEmpty()) {
             info("No caches selected for cache configuration migration.");
 
             return;
         }
 
-        warn("Thin source exposes only ClientCacheConfiguration; SQL-created flags and unsupported cache " +
-            "properties cannot be copied exactly.");
-
-        Object destOrigin = dest.connect();
-
-        if (destOrigin instanceof IgniteClient)
-            warn("Thin destination supports only ClientCacheConfiguration properties; unsupported source cache " +
-                "properties will use destination defaults.");
+        warn("Thin destination supports only ClientCacheConfiguration properties; unsupported source cache " +
+            "properties will use destination defaults.");
 
         for (MigrationCache cache : caches) {
-            if (destOrigin instanceof IgniteClient && cache.configuration().getAffinity() != null &&
+            if (cache.configuration().getAffinity() != null &&
                 !(cache.configuration().getAffinity() instanceof RendezvousAffinityFunction)) {
                 warn("Thin destination cannot represent the cache's custom affinity; using default rendezvous affinity " +
                     "[cache=" + cache.configuration().getName() + "].");
             }
 
-            String action;
-
-            if (destOrigin instanceof IgniteEx)
-                action = CacheConfigurationsTransferrer.createOrValidateCache((IgniteEx)destOrigin, cache, cfg);
-            else if (destOrigin instanceof IgniteClient)
-                action = CacheConfigurationsTransferrer.createOrValidateThinCache((IgniteClient)destOrigin, cache, cfg);
-            else
-                throw new IgniteException("Unsupported cache configuration destination: " +
-                    destOrigin.getClass().getName());
+            String action = createOrValidateThinCache(cache);
 
             info("Cache " + action + " [sourceName=" + cache.sourceName() + ", destinationName=" +
                 cache.configuration().getName() + ", sql=" + cache.sql() + ", configuration=" +
                 cache.configuration() + "].");
         }
+    }
+
+    /** */
+    private String createOrValidateThinCache(MigrationCache cache) {
+        String name = cache.configuration().getName();
+        boolean exists = dest.cacheNames().contains(name);
+
+        if (cfg.noCacheCreate()) {
+            if (!exists)
+                throw new IgniteException("Destination cache does not exist [cache=" + name + "].");
+
+            return "creation skipped; using existing [reason='no cache create']";
+        }
+
+        if (exists && !cfg.createCacheIfNotExists())
+            throw new CacheExistsException("Destination cache already exists [cache=" + name + "].");
+
+        if (exists)
+            return "creation skipped; using existing [reason='already exists']";
+
+        ClientCacheConfiguration clientCfg = ThinClientCacheConfigurationAdapter
+            .toClientCacheConfiguration(cache.configuration());
+
+        if (cfg.createCacheIfNotExists())
+            dest.getOrCreateCache(clientCfg);
+        else
+            dest.createCache(clientCfg);
+
+        return "created";
     }
 
     /**
@@ -108,18 +127,13 @@ public class ThinClientCacheConfigurationsTransferrer extends AbstractCategoryTr
     public static List<MigrationCache> sourceCaches(IgniteClient client) {
         List<MigrationCache> res = new ArrayList<>();
 
-        try {
-            for (String name : client.cacheNames()) {
-                ClientCache<Object, Object> cache = client.<Object, Object>cache(name);
-                ClientCacheConfiguration clientCfg = cache.getConfiguration();
-                org.apache.ignite.configuration.CacheConfiguration<?, ?> cacheCfg =
-                    ThinClientCacheConfigurationAdapter.toCacheConfiguration(clientCfg);
+        for (String name : client.cacheNames()) {
+            ClientCache<Object, Object> cache = client.<Object, Object>cache(name);
+            ClientCacheConfiguration clientCfg = cache.getConfiguration();
+            org.apache.ignite.configuration.CacheConfiguration<?, ?> cacheCfg =
+                ThinClientCacheConfigurationAdapter.toCacheConfiguration(clientCfg);
 
-                res.add(new MigrationCache(name, cacheCfg, false, CacheType.USER));
-            }
-        }
-        catch (RuntimeException e) {
-            throw new IgniteException("Failed to read cache configurations through the thin client.", e);
+            res.add(new MigrationCache(name, cacheCfg, false, CacheType.USER));
         }
 
         res.sort(Comparator.comparing(MigrationCache::sourceName));

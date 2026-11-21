@@ -212,7 +212,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         IgniteToIgniteMigrationConfiguration bin = new IgniteToIgniteMigrationConfiguration();
         bin.cacheData().batchSize(7).readThreads(3).writeThreads(2).queueCapacity(1);
-        bin.cacheMigration().cacheConfigurationTransformer(cfg -> cfg.setName("copy-" + cfg.getName())
+        bin.cacheMigration().setCacheConfigurationTransformer(cfg -> cfg.setName("copy-" + cfg.getName())
             .setBackups(0).setAffinity(new RendezvousAffinityFunction(false, 32)));
         migrate(bin);
 
@@ -332,14 +332,14 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         assertThrows(log, () -> {
             IgniteToIgniteMigrationConfiguration grps = new IgniteToIgniteMigrationConfiguration();
-            grps.cacheMigration().cacheGroupNames("included");
+            grps.cacheMigration().setCacheGroupNames(java.util.List.of("included"));
             migrate(grps);
             return null;
         }, CacheExistsException.class, "Destination cache already exists");
 
         IgniteToIgniteMigrationConfiguration grps2 = new IgniteToIgniteMigrationConfiguration();
-        grps2.cacheMigration().cacheGroupNames("included");
-        grps2.cacheMigration().noCacheCreate(true);
+        grps2.cacheMigration().setCacheGroupNames(java.util.List.of("included"));
+        grps2.cacheMigration().setNoCacheCreate(true);
         grps2.cacheData().skipConflictVersion(true).batchSize(2);
         migrate(grps2);
 
@@ -348,8 +348,8 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         assertNull(dest.cache("excluded"));
 
         IgniteToIgniteMigrationConfiguration createMissing = new IgniteToIgniteMigrationConfiguration();
-        createMissing.cacheMigration().cacheGroupNames("excluded");
-        createMissing.cacheMigration().createCacheIfNotExists(true);
+        createMissing.cacheMigration().setCacheGroupNames(java.util.List.of("excluded"));
+        createMissing.cacheMigration().setCreateCacheIfNotExists(true);
         createMissing.cacheData().skipConflictVersion(true);
         migrate(createMissing);
 
@@ -365,7 +365,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "value");
 
         IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
-        cfg.cacheMigration().noCacheCreate(true);
+        cfg.cacheMigration().setNoCacheCreate(true);
 
         Throwable err = assertThrows(log, () -> {
             migrate(cfg);
@@ -388,7 +388,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             .setAffinity(new RendezvousAffinityFunction(false, 8))).put(2, "second");
 
         IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
-        cfg.cacheMigration().cacheConfigurationTransformer(cache -> cache.setName("duplicate"));
+        cfg.cacheMigration().setCacheConfigurationTransformer(cache -> cache.setName("duplicate"));
 
         Throwable err = assertThrows(log, () -> {
             migrate(cfg);
@@ -1044,7 +1044,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         IgniteToIgniteMigrationConfiguration ps = new IgniteToIgniteMigrationConfiguration();
         ps.cacheData().skipConflictVersion(true);
-        ps.cacheMigration().cacheGroupNames("selected");
+        ps.cacheMigration().setCacheGroupNames(java.util.List.of("selected"));
         migrate(ps);
 
         assertEquals(sql(src, "SELECT ID FROM INCLUDED"), sql(dest, "SELECT ID FROM INCLUDED"));
@@ -1070,7 +1070,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         // Select a group that has no caches, so the destination receives no SQL tables or schema.
         IgniteToIgniteMigrationConfiguration os = new IgniteToIgniteMigrationConfiguration();
         os.cacheData().skipConflictVersion(true);
-        os.cacheMigration().cacheGroupNames("empty-group");
+        os.cacheMigration().setCacheGroupNames(java.util.List.of("empty-group"));
         migrate(os);
 
         // The SQL table (and its PUBLIC schema) was not migrated.
@@ -1095,7 +1095,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         IgniteToIgniteMigrationConfiguration sd = new IgniteToIgniteMigrationConfiguration();
         sd.cacheData().skipConflictVersion(true);
-        sd.cacheMigration().moveDataStructures(false);
+        sd.cacheMigration().setMoveDataStructures(false);
         migrate(sd);
 
         assertEquals("value", dest.cache("user-cache").get(1));

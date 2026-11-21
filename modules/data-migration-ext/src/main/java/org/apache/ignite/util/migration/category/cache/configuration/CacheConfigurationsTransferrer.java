@@ -24,9 +24,6 @@ import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.cache.CacheExistsException;
-import org.apache.ignite.cache.affinity.rendezvous.RendezvousAffinityFunction;
-import org.apache.ignite.client.ClientCacheConfiguration;
-import org.apache.ignite.client.IgniteClient;
 import org.apache.ignite.cache.QueryEntity;
 import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.IgniteEx;
@@ -39,145 +36,86 @@ import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 
-/** Transfers selected cache configurations from a thick-client source. */
-public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<IgniteEx, MigrationCache> {
+/** Transfers cache configurations to a thick-client destination. */
+public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<Object, MigrationCache> {
+    /** Connected destination. */
+    private final IgniteEx dest;
+
     /** */
     private final CacheMigrationConfiguration cfg;
 
     /** */
-    private final MigrationCachePlan cachePlan;
+    private final List<MigrationCache> caches;
 
     /**
-     * @param from Source.
+     * @param from Connected source (thick or thin).
+     * @param dest Connected destination.
      * @param log Logger.
-     * @param cfg Destination cache creation policy.
-     * @param cachePlan Cache selection for this migration.
+     * @param cfg Caches migration configuration.
+     * @param caches Selected and transformed cache definitions.
      */
     public CacheConfigurationsTransferrer(
-        IgniteEx from,
+        Object from,
+        IgniteEx dest,
         IgniteLogger log,
         CacheMigrationConfiguration cfg,
-        MigrationCachePlan cachePlan
+        List<MigrationCache> caches
     ) {
         super(from, MigrationCategory.CACHE_CONFIGURATION, MigrationCache.class, log);
 
+        this.dest = dest;
         this.cfg = cfg;
-        this.cachePlan = cachePlan;
+        this.caches = caches;
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<MigrationCache> transformer) {
-        List<MigrationCache> caches = cachePlan.caches();
-
+    @Override protected void doTransfer(MigrationDestination destEndpoint, MigrationTransformer<MigrationCache> transformer) {
         if (caches.isEmpty()) {
             info("No caches selected for cache configuration migration.");
 
             return;
         }
 
-        Object destOrigin = dest.connect();
-
-        if (destOrigin instanceof IgniteClient)
-            warn("Thin destination supports only ClientCacheConfiguration properties; unsupported source cache " +
-                "properties will use destination defaults.");
-
         for (MigrationCache cache : caches) {
-            if (destOrigin instanceof IgniteClient && cache.configuration().getAffinity() != null &&
-                !(cache.configuration().getAffinity() instanceof RendezvousAffinityFunction)) {
-                warn("Thin destination cannot represent the cache's custom affinity; using default rendezvous affinity " +
-                    "[cache=" + cache.configuration().getName() + "].");
-            }
+            String name = cache.configuration().getName();
+            DynamicCacheDescriptor desc = dest.context().cache().cacheDescriptor(name);
+
+            if (desc != null && desc.cacheType() != cache.type())
+                throw new IgniteException("Destination cache type differs from source [cache=" + name + "].");
 
             String action;
 
-            if (destOrigin instanceof IgniteEx)
-                action = createOrValidateCache((IgniteEx)destOrigin, cache, cfg);
-            else if (destOrigin instanceof IgniteClient)
-                action = createOrValidateThinCache((IgniteClient)destOrigin, cache, cfg);
-            else
-                throw new IgniteException("Unsupported cache configuration destination: " +
-                    destOrigin.getClass().getName());
+            if (cfg.noCacheCreate()) {
+                if (desc == null)
+                    throw new IgniteException("Destination cache does not exist [cache=" + name + "].");
+
+                try {
+                    dest.context().cache().getOrStartCache(name);
+                }
+                catch (IgniteCheckedException e) {
+                    throw new IgniteException("Failed to open migration cache [cache=" + name + "].", e);
+                }
+
+                action = "creation skipped; using existing [reason='no cache create']";
+            }
+            else {
+                try {
+                    boolean created = dest.context().cache().dynamicStartCache(cache.configuration(), name, null,
+                        cache.type(), cache.sql(), false, true, true).get();
+
+                    if (!created && !cfg.createCacheIfNotExists())
+                        throw new CacheExistsException("Destination cache already exists [cache=" + name + "].");
+
+                    action = created ? "created" : "creation skipped; using existing [reason='already exists'].";
+                }
+                catch (IgniteCheckedException e) {
+                    throw new IgniteException("Failed to create destination cache [cache=" + name + "].", e);
+                }
+            }
 
             info("Cache " + action + " [sourceName=" + cache.sourceName() + ", destinationName=" +
                 cache.configuration().getName() + ", sql=" + cache.sql() + ", configuration=" +
                 cache.configuration() + "].");
-        }
-    }
-
-    /** */
-    static String createOrValidateCache(IgniteEx ig, MigrationCache cache,
-        CacheMigrationConfiguration cfg) {
-        String name = cache.configuration().getName();
-        DynamicCacheDescriptor desc = ig.context().cache().cacheDescriptor(name);
-
-        if (desc != null && desc.cacheType() != cache.type())
-            throw new IgniteException("Destination cache type differs from source: " + name + '.');
-
-        if (cfg.noCacheCreate()) {
-            if (desc == null)
-                throw new IgniteException("Destination cache does not exist: " + name + '.');
-
-            openCache(ig, name);
-
-            return "creation skipped; using existing [reason=no-cache-create]";
-        }
-
-        try {
-            boolean created = ig.context().cache().dynamicStartCache(cache.configuration(), name, null, cache.type(),
-                cache.sql(), false, true, true).get();
-
-            if (!created && !cfg.createCacheIfNotExists())
-                throw new CacheExistsException("Destination cache already exists: " + name + '.');
-
-            return created ? "created" : "creation skipped; using existing [reason=already-exists]";
-        }
-        catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to create destination cache: " + name + '.', e);
-        }
-    }
-
-    /** */
-    private static void openCache(IgniteEx ig, String name) {
-        try {
-            ig.context().cache().getOrStartCache(name);
-        }
-        catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to open migration cache: " + name + '.', e);
-        }
-    }
-
-    /** */
-    static String createOrValidateThinCache(IgniteClient client, MigrationCache cache,
-        CacheMigrationConfiguration cfg) {
-        String name = cache.configuration().getName();
-        boolean exists = client.cacheNames().contains(name);
-
-        if (cfg.noCacheCreate()) {
-            if (!exists)
-                throw new IgniteException("Destination cache does not exist: " + name + '.');
-
-            return "creation skipped; using existing [reason=no-cache-create]";
-        }
-
-        if (exists && !cfg.createCacheIfNotExists())
-            throw new CacheExistsException("Destination cache already exists: " + name + '.');
-
-        if (exists)
-            return "creation skipped; using existing [reason=already-exists]";
-
-        ClientCacheConfiguration clientCfg = ThinClientCacheConfigurationAdapter
-            .toClientCacheConfiguration(cache.configuration());
-
-        try {
-            if (cfg.createCacheIfNotExists())
-                client.getOrCreateCache(clientCfg);
-            else
-                client.createCache(clientCfg);
-
-            return "created";
-        }
-        catch (RuntimeException e) {
-            throw new IgniteException("Failed to create destination cache through the thin client: " + name + '.', e);
         }
     }
 
@@ -199,13 +137,11 @@ public class CacheConfigurationsTransferrer extends AbstractCategoryTransferrer<
                     CacheConfigurationsTransferrer.class.getClassLoader());
             }
             catch (IgniteCheckedException e) {
-                throw new IgniteException("Failed to copy cache configuration: " + cacheCfg.getName() + '.', e);
+                throw new IgniteException("Failed to copy cache configuration [cache=" + cacheCfg.getName() + "].", e);
             }
 
             for (QueryEntity entity : cacheCfg.getQueryEntities()) {
-                if (entity instanceof QueryEntityEx) {
-                    QueryEntityEx ex = (QueryEntityEx)entity;
-
+                if (entity instanceof QueryEntityEx ex) {
                     if (Integer.valueOf(-1).equals(ex.getPrimaryKeyInlineSize()))
                         ex.setPrimaryKeyInlineSize(null);
 

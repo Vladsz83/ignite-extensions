@@ -119,9 +119,7 @@ public final class ThinClientCacheConfigurationAdapter {
         if (expiryFactory != null)
             res.setExpiryPolicy(expiryFactory.create());
 
-        if (cfg.getAffinity() instanceof RendezvousAffinityFunction) {
-            RendezvousAffinityFunction aff = (RendezvousAffinityFunction)cfg.getAffinity();
-
+        if (cfg.getAffinity() instanceof RendezvousAffinityFunction aff) {
             res.setAffinityConfiguration(new ClientAffinityConfiguration()
                 .setPartitions(aff.getPartitions())
                 .setExcludeNeighbors(aff.isExcludeNeighbors()));

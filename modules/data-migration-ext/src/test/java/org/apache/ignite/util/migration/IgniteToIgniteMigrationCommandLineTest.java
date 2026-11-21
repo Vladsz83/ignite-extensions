@@ -175,13 +175,13 @@ public class IgniteToIgniteMigrationCommandLineTest {
             assertTrue(cfg.isNoMappingsCreate());
 
             // Cache selection
-            assertFalse(cfg.getCacheMigration().isMoveDataStructures());
+            assertFalse(cfg.getCacheMigration().moveDataStructures());
             assertEquals(Arrays.asList("grp1", "grp2"),
-                new java.util.ArrayList<>(cfg.getCacheMigration().getCacheGroupNames()));
+                new java.util.ArrayList<>(cfg.getCacheMigration().cacheGroupNames()));
 
             // Cache creation policy
-            assertFalse(cfg.getCacheMigration().isNoCacheCreate());
-            assertTrue(cfg.getCacheMigration().isCreateCacheIfNotExists());
+            assertFalse(cfg.getCacheMigration().noCacheCreate());
+            assertTrue(cfg.getCacheMigration().createCacheIfNotExists());
 
             // Data transfer
             assertEquals(256, cfg.getCacheData().getBatchSize());
@@ -218,7 +218,7 @@ public class IgniteToIgniteMigrationCommandLineTest {
             IgniteToIgniteMigrationConfiguration xmlCfg = beans.values().iterator().next();
 
             Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer = Function.identity();
-            xmlCfg.cacheMigration().cacheConfigurationTransformer(transformer);
+            xmlCfg.cacheMigration().setCacheConfigurationTransformer(transformer);
 
             IgniteToIgniteMigrationCommandLine.merge(cfg, xmlCfg, options);
 
@@ -227,7 +227,7 @@ public class IgniteToIgniteMigrationCommandLineTest {
             assertEquals(8, cfg.getCacheData().getWriteThreads());
             assertEquals(128, cfg.getCacheData().getQueueCapacity());
             assertEquals(1, cfg.getMetastorage().getFilters().size());
-            assertSame(transformer, cfg.getCacheMigration().getCacheConfigurationTransformer());
+            assertSame(transformer, cfg.getCacheMigration().cacheConfigurationTransformer());
         }
 
         // CLI-specified value takes precedence

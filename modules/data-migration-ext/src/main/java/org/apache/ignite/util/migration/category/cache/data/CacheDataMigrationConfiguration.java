@@ -348,9 +348,7 @@ public class CacheDataMigrationConfiguration {
      * @param cfg Data streamer configuration callback, invoked once per cache before adding data.
      * @return {@code this} for chaining.
      */
-    public CacheDataMigrationConfiguration dataStreamerConfiguration(
-        Consumer<IgniteDataStreamer<Object, Object>> cfg
-    ) {
+    public CacheDataMigrationConfiguration dataStreamerConfiguration(Consumer<IgniteDataStreamer<Object, Object>> cfg) {
         return dataStreamerConfiguration(cfg, "custom callback");
     }
 

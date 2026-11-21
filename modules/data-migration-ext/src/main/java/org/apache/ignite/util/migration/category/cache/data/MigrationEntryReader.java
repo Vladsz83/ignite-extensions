@@ -67,7 +67,7 @@ public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, O
                 row.expireTime(), row.version());
         }
         catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to read migration row from cache: " + cacheName + '.', e);
+            throw new IgniteException("Failed to read migration row [cache=" + cacheName + "].", e);
         }
         finally {
             ctx.shared().database().checkpointReadUnlock();
