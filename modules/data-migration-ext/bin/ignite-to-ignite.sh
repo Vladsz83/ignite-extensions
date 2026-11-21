@@ -17,11 +17,7 @@
 # limitations under the License.
 #
 
-export MAIN_CLASS="org.apache.ignite.util.migration.DataMigrationCommandLineStartup"
+export MAIN_CLASS="org.apache.ignite.util.migration.IgniteToIgniteMigrationCommandLine"
+IGNITE_HOME_TMP="${IGNITE_HOME:-$(cd "$(dirname "$0")/.." && pwd)}"
 
-if [ "${IGNITE_HOME:-}" = "" ];
-    then IGNITE_HOME_TMP="$(dirname "$(cd "$(dirname "$0")"; "pwd")")";
-    else IGNITE_HOME_TMP=${IGNITE_HOME};
-fi
-
-${IGNITE_HOME_TMP}/bin/ignite.sh "$@"
+exec "${IGNITE_HOME_TMP}/bin/control.sh" "$@"

@@ -17,6 +17,7 @@
 
 package org.apache.ignite.util.migration;
 
+import org.apache.ignite.configuration.ClientConfiguration;
 import org.apache.ignite.configuration.IgniteConfiguration;
 import org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi;
 import org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder;
@@ -26,6 +27,7 @@ import org.springframework.context.support.GenericApplicationContext;
 import static org.apache.ignite.testframework.GridTestUtils.assertThrows;
 import static org.apache.ignite.util.migration.IgniteToIgniteMigrationCommandLine.context;
 import static org.apache.ignite.util.migration.IgniteToIgniteMigrationCommandLine.nodeConfiguration;
+import static org.apache.ignite.util.migration.IgniteToIgniteMigrationCommandLine.thinConfiguration;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
@@ -66,6 +68,32 @@ public class IgniteToIgniteMigrationXmlConfigTest {
                 () -> nodeConfiguration(ctx, "destination"),
                 IllegalArgumentException.class,
                 "Expected exactly one IgniteConfiguration bean for destination.");
+        }
+    }
+
+    /** Thin-client XML requires exactly one ClientConfiguration bean and loads its addresses. */
+    @Test
+    public void testThinClientXml() throws Exception {
+        try (GenericApplicationContext ctx = context("migration/source-thin.xml")) {
+            ClientConfiguration cfg = thinConfiguration(java.util.Collections.emptyMap(), "src", ctx);
+
+            assertEquals("127.0.0.1:10800", cfg.getAddresses()[0]);
+        }
+    }
+
+    /** Thin-client connection XML rejects zero or multiple ClientConfiguration beans. */
+    @Test
+    public void testInvalidThinClientXml() throws Exception {
+        try (GenericApplicationContext ctx = context("migration/no-ignite.xml")) {
+            assertThrows(null, () -> thinConfiguration(java.util.Collections.emptyMap(), "src", ctx),
+                IllegalArgumentException.class,
+                "Expected exactly one ClientConfiguration bean for src thin-client configuration");
+        }
+
+        try (GenericApplicationContext ctx = context("migration/two-thin.xml")) {
+            assertThrows(null, () -> thinConfiguration(java.util.Collections.emptyMap(), "dest", ctx),
+                IllegalArgumentException.class,
+                "Expected exactly one ClientConfiguration bean for dest thin-client configuration");
         }
     }
 }

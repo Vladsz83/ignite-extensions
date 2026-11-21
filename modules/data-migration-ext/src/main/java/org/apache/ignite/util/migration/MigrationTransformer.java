@@ -19,7 +19,7 @@ package org.apache.ignite.util.migration;
 
 import org.jetbrains.annotations.Nullable;
 
-/** A channel filter/transformer. */
+/** A migration item filter/transformer. */
 @FunctionalInterface
 public interface MigrationTransformer<T> {
     /**

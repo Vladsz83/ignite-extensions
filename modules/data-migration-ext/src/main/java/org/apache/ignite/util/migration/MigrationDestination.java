@@ -17,21 +17,16 @@
 
 package org.apache.ignite.util.migration;
 
-import java.util.concurrent.ExecutorService;
 import org.apache.ignite.IgniteCheckedException;
-import org.jetbrains.annotations.Nullable;
 
-/**
- * Transfers one kind of entity between connected endpoints. Channel instances belong to a single migration.
- *
- * @param <T> Type of entities to transfer.
- */
-public interface MigrationChannel<T> {
+/** Destination side of a migration. Receiver operations are associated with {@link MigrationCategory}. */
+public interface MigrationDestination extends MigrationOrigin {
+
     /**
-     * Transfers entities.
+     * Accepts one transferred entity.
      *
-     * @param pool Shared executor the channel may draw worker threads from.
-     * @param transformer Item transformer, or null to transfer items unchanged.
+     * @param category Data category.
+     * @param data Entity to accept.
      */
-    void transfer(ExecutorService pool, @Nullable MigrationTransformer<T> transformer) throws IgniteCheckedException;
+    void accept(MigrationCategory category, Object data) throws IgniteCheckedException;
 }

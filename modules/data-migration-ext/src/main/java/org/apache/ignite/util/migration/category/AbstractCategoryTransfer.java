@@ -17,69 +17,54 @@
 
 package org.apache.ignite.util.migration.category;
 
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.TimeUnit;
 import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
-import org.apache.ignite.util.migration.MigrationChannel;
-import org.apache.ignite.util.migration.MigrationOrigin;
+import org.apache.ignite.util.migration.CategoryTransferrer;
+import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.jetbrains.annotations.Nullable;
 
-/**
- * Common endpoints and logging for migration channels.
- *
- * @param <FROM> Source origin type.
- * @param <TO> Destination origin type.
- * @param <E> Entity type.
- */
-public abstract class AbstractMigrationChannel<FROM, TO, E> implements MigrationChannel<E> {
-    /** */
-    protected final MigrationOrigin<FROM> from;
-
-    /** */
-    protected final MigrationOrigin<TO> to;
-
+/** Common logging support for direct-transfer category implementations. */
+public abstract class AbstractCategoryTransfer<E> implements CategoryTransferrer<E> {
     /** */
     protected final IgniteLogger log;
 
     /**
-     * @param from Connected source endpoint.
-     * @param to Connected destination endpoint.
      * @param log Migration logger.
      */
-    protected AbstractMigrationChannel(
-        MigrationOrigin<FROM> from,
-        MigrationOrigin<TO> to,
-        IgniteLogger log
-    ) {
-        this.from = from;
-        this.to = to;
+    protected AbstractCategoryTransfer(IgniteLogger log) {
         this.log = log;
     }
 
     /** {@inheritDoc} */
-    @Override public final void transfer(
-        ExecutorService pool,
-        @Nullable MigrationTransformer<E> transformer
-    ) throws IgniteCheckedException {
+    @Override public final void transfer(MigrationDestination dest, @Nullable MigrationTransformer<E> transformer) {
         long start = System.nanoTime();
 
-        info("Starting migration channel: " + getClass().getSimpleName() + '.');
+        info("Starting category transfer [category=" + category() + ", transferrer=" +
+            getClass().getSimpleName() + "].");
 
-        doTransfer(pool, transformer);
+        try {
+            doTransfer(dest, transformer);
+        }
+        catch (IgniteCheckedException e) {
+            throw new IgniteException("Failed to transfer category [category=" + category() + ", error=" +
+                e.getMessage() + "].", e);
+        }
 
-        info("Finished migration channel [channel=" + getClass().getSimpleName() + ", elapsedMs=" +
+        info("Finished category transfer [category=" + category() + ", transferrer=" + getClass().getSimpleName() +
+            ", elapsedMs=" +
             TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) + "].");
     }
 
     /**
-     * Transfers this channel's entities.
+     * Transfers this transferrer's entities using its bound direct-write implementation.
      *
-     * @param pool Shared executor the channel may draw worker threads from.
+     * @param dest Destination endpoint.
      * @param transformer Item transformer, or null to transfer items unchanged.
      */
-    protected abstract void doTransfer(ExecutorService pool, @Nullable MigrationTransformer<E> transformer)
+    protected abstract void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<E> transformer)
         throws IgniteCheckedException;
 
     /** */

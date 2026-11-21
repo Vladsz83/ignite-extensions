@@ -20,6 +20,7 @@ package org.apache.ignite.util.migration;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.logger.java.JavaLogger;
 import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsMigrationConfiguration;
@@ -28,7 +29,7 @@ import org.apache.ignite.util.migration.category.cache.data.CacheDataMigrationCo
 import org.apache.ignite.util.migration.category.metastorage.MetastorageMigrationConfiguration;
 
 /**
- * Migration settings. Aggregates shared settings and per-channel sub-configurations; do not mutate while a
+ * Migration settings. Aggregates shared settings and per-category sub-configurations; do not mutate while a
  * migration is running.
  */
 public class IgniteToIgniteMigrationConfiguration {
@@ -44,9 +45,6 @@ public class IgniteToIgniteMigrationConfiguration {
     /** */
     private final MetastorageMigrationConfiguration metastorage = new MetastorageMigrationConfiguration();
 
-    /** Thread count of the shared executor used by all channels. */
-    private int migrationThreads = 4;
-
     /** */
     private boolean noBinaryMetadataCreate;
 
@@ -54,25 +52,18 @@ public class IgniteToIgniteMigrationConfiguration {
     private boolean noMappingsCreate;
 
     /** */
-    private final Map<Class<? extends MigrationChannel<?>>, MigrationTransformer<?>> transformers = new HashMap<>();
+    private final Map<Class<? extends CategoryTransferrer<?>>, MigrationTransformer<?>> transformers = new HashMap<>();
 
     /** */
     private IgniteLogger log = new JavaLogger();
 
     /**
-     * Validates shared and all per-channel settings before either connection is opened.
+     * Validates shared and all category settings before either connection is opened.
      */
     public void validate() {
-        positive(migrationThreads, "migration-threads");
-
+        cacheSelection.validate();
         cacheConfigurations.validate();
         cacheData.validate();
-    }
-
-    /** */
-    private static void positive(int val, String name) {
-        if (val <= 0)
-            throw new IllegalArgumentException(name + " must be positive.");
     }
 
     /** @return Shared cache selection and name mapping. */
@@ -93,21 +84,6 @@ public class IgniteToIgniteMigrationConfiguration {
     /** @return Metastorage transfer settings. */
     public MetastorageMigrationConfiguration metastorage() {
         return metastorage;
-    }
-
-    /** @return Thread count of the shared executor used by all channels. */
-    public int migrationThreads() {
-        return migrationThreads;
-    }
-
-    /**
-     * @param val Thread count of the shared executor used by all channels.
-     * @return {@code this} for chaining.
-     */
-    public IgniteToIgniteMigrationConfiguration migrationThreads(int val) {
-        migrationThreads = val;
-
-        return this;
     }
 
     /** @return Whether explicit binary schema registration is disabled. */
@@ -141,30 +117,35 @@ public class IgniteToIgniteMigrationConfiguration {
     }
 
     /**
-     * @param <T> Channel item type.
-     * @param channel Migration channel class.
-     * @param transformer Channel transformer. Returning {@code null} skips an item.
+     * @param <T> Transferred item type.
+     * @param transferrer Transferrer class.
+     * @param transformer Item transformer. Returning {@code null} skips an item.
      * @return {@code this} for chaining.
      */
     public <T> IgniteToIgniteMigrationConfiguration transformer(
-        Class<? extends MigrationChannel<T>> channel,
+        Class<? extends CategoryTransferrer<T>> transferrer,
         MigrationTransformer<T> transformer
     ) {
-        transformers.put(channel, Objects.requireNonNull(transformer));
+        transformers.put(transferrer, Objects.requireNonNull(transformer));
 
         return this;
     }
 
     /**
-     * @param <T> Channel item type.
-     * @param channel Migration channel class.
+     * @param <T> Transferred item type.
+     * @param transferrer Transferrer class.
      * @return Configured transformer, or an identity transformer if none is configured.
      */
     @SuppressWarnings("unchecked")
-    public <T> MigrationTransformer<T> transformer(Class<? extends MigrationChannel<T>> channel) {
-        MigrationTransformer<T> transformer = (MigrationTransformer<T>)transformers.get(channel);
+    public <T> MigrationTransformer<T> transformer(Class<? extends CategoryTransferrer<T>> transferrer) {
+        MigrationTransformer<T> transformer = (MigrationTransformer<T>)transformers.get(transferrer);
 
         return transformer == null ? item -> item : transformer;
+    }
+
+    /** @return Sorted names of transferrers with configured transformers. */
+    String transformerProviders() {
+        return transformers.keySet().stream().map(Class::getName).sorted().collect(Collectors.joining(",", "[", "]"));
     }
 
     /** @return Migration logger. */
@@ -200,16 +181,6 @@ public class IgniteToIgniteMigrationConfiguration {
     /** @return Metastorage transfer settings. */
     public MetastorageMigrationConfiguration getMetastorage() {
         return metastorage;
-    }
-
-    /** @return Thread count of the shared executor. */
-    public int getMigrationThreads() {
-        return migrationThreads;
-    }
-
-    /** @param val Thread count of the shared executor. */
-    public void setMigrationThreads(int val) {
-        migrationThreads = val;
     }
 
     /** @return Whether binary metadata registration is disabled. */

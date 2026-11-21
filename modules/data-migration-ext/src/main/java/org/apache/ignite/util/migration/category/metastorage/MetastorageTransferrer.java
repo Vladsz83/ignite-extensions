@@ -23,15 +23,15 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ExecutorService;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
-import org.apache.ignite.util.migration.MigrationOrigin;
+import org.apache.ignite.util.migration.MigrationCategory;
+import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.AbstractMigrationChannel;
+import org.apache.ignite.util.migration.category.AbstractCategoryTransfer;
 import org.jetbrains.annotations.Nullable;
 
 /**
@@ -40,7 +40,13 @@ import org.jetbrains.annotations.Nullable;
  * graceful-stop node ids, and SQL views when the destination has no SQL schema. Configured key
  * filters and a transformer can additionally skip or transform entries.
  */
-public class MetastorageMigrationChannel extends AbstractMigrationChannel<IgniteEx, IgniteEx, Map.Entry<String, Serializable>> {
+public class MetastorageTransferrer extends AbstractCategoryTransfer<Map.Entry<String, Serializable>> {
+    /** Source node. */
+    private final IgniteEx from;
+
+    /** Destination node. */
+    private final IgniteEx to;
+
     /** */
     private static final String VIEW_PREFIX = "ignite.internal.sql.view.";
 
@@ -65,25 +71,38 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
      * @param log Logger.
      * @param cfg Metastorage transfer settings.
      */
-    public MetastorageMigrationChannel(
-        MigrationOrigin<IgniteEx> from,
-        MigrationOrigin<IgniteEx> to,
+    public MetastorageTransferrer(
+        IgniteEx from,
+        IgniteEx to,
         IgniteLogger log,
         MetastorageMigrationConfiguration cfg
     ) {
-        super(from, to, log);
+        super(log);
+
+        this.from = from;
+        this.to = to;
         this.cfg = cfg;
     }
 
     /** {@inheritDoc} */
+    @Override public MigrationCategory category() {
+        return MigrationCategory.METASTORAGE_ENTRY;
+    }
+
+    /** {@inheritDoc} */
+    @Override public Class<?> dataClass() {
+        return Map.Entry.class;
+    }
+
+    /** {@inheritDoc} */
     @Override protected void doTransfer(
-        ExecutorService pool,
+        MigrationDestination dest,
         @Nullable MigrationTransformer<Map.Entry<String, Serializable>> transformer
     ) throws IgniteCheckedException {
         MetastorageKeyFilterTransformer notPortableFilter =
             cfg.ignoreDefaultFilter() ? null : notPortableKeyFilter();
 
-        from.origin().context().distributedMetastorage().iterate("", (key, val) -> {
+        from.context().distributedMetastorage().iterate("", (key, val) -> {
             Map.Entry<String, Serializable> candidate = new SimpleImmutableEntry<>(key, val);
 
             // The default filter runs first, on the original key, so a later filter or transformer
@@ -112,7 +131,7 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
             }
 
             try {
-                to.origin().context().distributedMetastorage().write(candidate.getKey(), candidate.getValue());
+                to.context().distributedMetastorage().write(candidate.getKey(), candidate.getValue());
 
                 info("Transferred distributed metadata: " + candidate.getKey() + '.');
             }
@@ -128,7 +147,7 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
     /** Whether any SQL schema exists on the destination (computed once). */
     private boolean hasSqlSchemas() {
         if (hasSqlSchemas == null)
-            hasSqlSchemas = to.origin().context().cache().cacheDescriptors().values().stream()
+            hasSqlSchemas = to.context().cache().cacheDescriptors().values().stream()
                 .anyMatch(DynamicCacheDescriptor::sql);
 
         return hasSqlSchemas;
@@ -152,4 +171,5 @@ public class MetastorageMigrationChannel extends AbstractMigrationChannel<Ignite
 
         return notPortableKeyFilter;
     }
+
 }

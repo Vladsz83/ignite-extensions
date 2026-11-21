@@ -18,6 +18,7 @@
 package org.apache.ignite.util.migration.category.cache.configuration;
 
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -27,7 +28,7 @@ import java.util.function.Function;
 import org.apache.ignite.configuration.CacheConfiguration;
 
 /**
- * Cache selection and name mapping shared by the cache-configuration and cache-data channels.
+ * Cache selection and name mapping shared by the cache-configuration and cache-data transferrers.
  */
 public class CacheSelectionConfiguration {
     /** */
@@ -48,15 +49,18 @@ public class CacheSelectionConfiguration {
             cfg.getName() : cfg.getGroupName());
     }
 
+    /** Validates programmatic and Spring-configured cache selection values before connecting. */
+    public void validate() {
+        validatedNames(cacheGrpNames);
+        Objects.requireNonNull(cacheCfgTransformer, "cache configuration transformer");
+    }
+
     /**
      * @param names Source cache group names. An empty set selects all user caches.
      * @return {@code this} for chaining.
      */
     public CacheSelectionConfiguration cacheGroupNames(String... names) {
-        cacheGrpNames = new HashSet<>(Arrays.asList(names));
-
-        if (cacheGrpNames.stream().anyMatch(name -> name == null || name.isEmpty()))
-            throw new IllegalArgumentException("Cache group names must not be empty.");
+        cacheGrpNames = validatedNames(Arrays.asList(Objects.requireNonNull(names)));
 
         return this;
     }
@@ -100,12 +104,12 @@ public class CacheSelectionConfiguration {
 
     /** @param names Source cache group names. An empty set selects all user caches. */
     public void setCacheGroupNames(Set<String> names) {
-        cacheGrpNames = names;
+        cacheGrpNames = validatedNames(names);
     }
 
     /** @param names Source cache group names. An empty set selects all user caches. */
     public void setCacheGroupNames(List<String> names) {
-        cacheGrpNames = new HashSet<>(names);
+        cacheGrpNames = validatedNames(names);
     }
 
     /** @return Whether data structure caches are included. */
@@ -130,5 +134,15 @@ public class CacheSelectionConfiguration {
         Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer
     ) {
         cacheCfgTransformer = Objects.requireNonNull(transformer);
+    }
+
+    /** Creates a validated, detached set of selected names. */
+    private static Set<String> validatedNames(Collection<String> names) {
+        Set<String> res = new HashSet<>(Objects.requireNonNull(names, "cache group names"));
+
+        if (res.stream().anyMatch(name -> name == null || name.isEmpty()))
+            throw new IllegalArgumentException("Cache group names must not be empty.");
+
+        return res;
     }
 }

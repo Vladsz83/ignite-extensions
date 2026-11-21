@@ -21,19 +21,37 @@ import java.util.Objects;
 import java.util.function.Consumer;
 import org.apache.ignite.IgniteDataStreamer;
 
-/** Data transfer knobs for the cache-data channel. */
+/** Data transfer knobs for the cache-data transferrer. */
 public class CacheDataMigrationConfiguration {
-    /** */
-    private int batchSize = 1;
+    /** Default maximum number of entries per batch. */
+    public static final int DFLT_BATCH_SIZE = 256;
+
+    /** Default number of queued batches. */
+    public static final int DFLT_QUEUE_CAPACITY = 64;
+
+    /** Default cache-data reader worker count. */
+    public static final int DFLT_READ_THREADS = 1;
+
+    /** Default cache-data writer worker count. */
+    public static final int DFLT_WRITE_THREADS = 1;
 
     /** */
-    private int readThreads = 1;
+    private int batchSize = DFLT_BATCH_SIZE;
 
-    /** */
-    private int writeThreads = 1;
+    /** Cache-data reader worker count. */
+    private int readThreads = DFLT_READ_THREADS;
+
+    /** Whether the reader count was explicitly configured. */
+    private boolean readThreadsConfigured;
+
+    /** Cache-data writer worker count. */
+    private int writeThreads = DFLT_WRITE_THREADS;
+
+    /** Whether the writer count was explicitly configured. */
+    private boolean writeThreadsConfigured;
 
     /** Number of queued batches, independent of the number of source partitions. */
-    private int queueCapacity = 64;
+    private int queueCapacity = DFLT_QUEUE_CAPACITY;
 
     /** Zero means unlimited. */
     private int readLimit;
@@ -52,6 +70,9 @@ public class CacheDataMigrationConfiguration {
 
     /** */
     private Consumer<IgniteDataStreamer<Object, Object>> streamerCfg = streamer -> { /* No-op. */ };
+
+    /** Human-readable description of the configured DataStreamer settings for startup logging. */
+    private String streamerCfgDescription = "Ignite defaults";
 
     /** Validates settings before a migration starts. */
     public void validate() {
@@ -95,54 +116,62 @@ public class CacheDataMigrationConfiguration {
         batchSize = val;
     }
 
-    /** @return Reader count. */
+    /** @return Reader worker count. */
     public int readThreads() {
         return readThreads;
     }
 
     /**
-     * @param val Number of reader threads.
+     * @param val Positive number of reader threads.
      * @return {@code this} for chaining.
      */
     public CacheDataMigrationConfiguration readThreads(int val) {
+        positive(val, "read-threads");
         readThreads = val;
+        readThreadsConfigured = true;
 
         return this;
     }
 
-    /** @return Reader count. */
+    /** @return Reader worker count. */
     public int getReadThreads() {
         return readThreads;
     }
 
-    /** @param val Number of reader threads. */
+    /** @param val Positive number of reader threads. */
     public void setReadThreads(int val) {
+        positive(val, "read-threads");
         readThreads = val;
+        readThreadsConfigured = true;
     }
 
-    /** @return Writer count. */
+    /** @return Writer worker count. */
     public int writeThreads() {
         return writeThreads;
     }
 
     /**
-     * @param val Number of writer threads.
+     * @param val Positive number of writer threads.
      * @return {@code this} for chaining.
      */
     public CacheDataMigrationConfiguration writeThreads(int val) {
+        positive(val, "write-threads");
         writeThreads = val;
+        writeThreadsConfigured = true;
 
         return this;
     }
 
-    /** @return Writer count. */
+    /** @return Writer worker count. */
     public int getWriteThreads() {
         return writeThreads;
     }
 
-    /** @param val Number of writer threads. */
+    /** @param val Positive number of writer threads. */
     public void setWriteThreads(int val) {
+        positive(val, "write-threads");
         writeThreads = val;
+        writeThreadsConfigured = true;
     }
 
     /** @return Maximum queued batches. */
@@ -168,6 +197,16 @@ public class CacheDataMigrationConfiguration {
     /** @param val Maximum queued batches. */
     public void setQueueCapacity(int val) {
         queueCapacity = val;
+    }
+
+    /** @return Whether read threads have an explicit dedicated-pool override. */
+    public boolean isReadThreadsConfigured() {
+        return readThreadsConfigured;
+    }
+
+    /** @return Whether write threads have an explicit dedicated-pool override. */
+    public boolean isWriteThreadsConfigured() {
+        return writeThreadsConfigured;
     }
 
     /** @return Global read entries per second, or zero. */
@@ -300,6 +339,11 @@ public class CacheDataMigrationConfiguration {
         return streamerCfg;
     }
 
+    /** @return Human-readable DataStreamer configuration description. */
+    public String dataStreamerConfigurationDescription() {
+        return streamerCfgDescription;
+    }
+
     /**
      * @param cfg Data streamer configuration callback, invoked once per cache before adding data.
      * @return {@code this} for chaining.
@@ -307,7 +351,20 @@ public class CacheDataMigrationConfiguration {
     public CacheDataMigrationConfiguration dataStreamerConfiguration(
         Consumer<IgniteDataStreamer<Object, Object>> cfg
     ) {
+        return dataStreamerConfiguration(cfg, "custom callback");
+    }
+
+    /**
+     * @param cfg Data streamer configuration callback, invoked once per cache before adding data.
+     * @param description Human-readable description for startup logging.
+     * @return {@code this} for chaining.
+     */
+    public CacheDataMigrationConfiguration dataStreamerConfiguration(
+        Consumer<IgniteDataStreamer<Object, Object>> cfg,
+        String description
+    ) {
         streamerCfg = Objects.requireNonNull(cfg);
+        streamerCfgDescription = Objects.requireNonNull(description);
 
         return this;
     }

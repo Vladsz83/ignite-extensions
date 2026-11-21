@@ -48,7 +48,7 @@ public class MetastorageMigrationConfiguration {
 
     /**
      * Adds a key filter that skips entries by key name or prefix, applied after the default filter
-     * and before a channel transformer.
+     * and before a transferrer transformer.
      *
      * @param filter Key filter to apply.
      * @return {@code this} for chaining.

@@ -28,18 +28,24 @@ import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiFunction;
+import java.util.function.Function;
 import org.apache.ignite.IgniteCache;
 import org.apache.ignite.IgniteCheckedException;
+import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLock;
 import org.apache.ignite.IgniteQueue;
 import org.apache.ignite.IgniteSet;
+import org.apache.ignite.Ignition;
 import org.apache.ignite.binary.BinaryObject;
+import org.apache.ignite.binary.BinaryType;
 import org.apache.ignite.cache.CacheAtomicityMode;
 import org.apache.ignite.cache.CacheExistsException;
 import org.apache.ignite.cache.affinity.rendezvous.RendezvousAffinityFunction;
 import org.apache.ignite.cache.query.SqlFieldsQuery;
+import org.apache.ignite.client.IgniteClient;
 import org.apache.ignite.cluster.ClusterState;
 import org.apache.ignite.configuration.CacheConfiguration;
+import org.apache.ignite.configuration.ClientConfiguration;
 import org.apache.ignite.configuration.CollectionConfiguration;
 import org.apache.ignite.configuration.DataRegionConfiguration;
 import org.apache.ignite.configuration.DataStorageConfiguration;
@@ -57,15 +63,21 @@ import org.apache.ignite.internal.processors.cache.version.GridCacheVersion;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersionConflictContext;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersionedEntryEx;
 import org.apache.ignite.internal.processors.cluster.ClusterIdAndTag;
+import org.apache.ignite.internal.processors.marshaller.MappedName;
 import org.apache.ignite.plugin.AbstractTestPluginProvider;
 import org.apache.ignite.plugin.PluginContext;
 import org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi;
 import org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder;
 import org.apache.ignite.testframework.junits.common.GridCommonAbstractTest;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsMigrationChannel;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsTransferrer;
+import org.apache.ignite.util.migration.category.cache.data.CacheDataTransferrer;
 import org.apache.ignite.util.migration.category.metastorage.MetastorageKeyFilterTransformer;
-import org.apache.ignite.util.migration.category.metastorage.MetastorageMigrationChannel;
+import org.apache.ignite.util.migration.category.metastorage.MetastorageTransferrer;
+import org.apache.ignite.util.migration.category.type.BinaryMetadataTransferrer;
+import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
+import org.apache.ignite.util.migration.category.type.TypeMappingsTransferrer;
 import org.apache.ignite.util.migration.endpoint.ThickClientMigrationEndpoint;
+import org.apache.ignite.util.migration.endpoint.ThinClientMigrationEndpoint;
 import org.junit.Test;
 
 import static org.apache.ignite.events.EventType.EVT_CACHE_QUERY_OBJECT_READ;
@@ -165,6 +177,14 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         assertEquals("world", dest.cache("strings").get("second"));
 
         assertEquals(person, mixedCopy.get(3));
+
+        MigrationTypeMapping srcMapping = typeMapping(src, CustomData.class.getName());
+        MigrationTypeMapping destMapping = typeMapping(dest, CustomData.class.getName());
+
+        assertNotNull(srcMapping);
+        assertNotNull(destMapping);
+        assertEquals(srcMapping.typeId(), destMapping.typeId());
+        assertEquals(srcMapping.platformId(), destMapping.platformId());
     }
 
     /** Binary records retain expiry and original versions across different partition counts and storage modes. */
@@ -219,8 +239,83 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         }
 
         assertNotNull(dest.binary().type("MigrationValue"));
+        BinaryType srcType = src.binary().type("MigrationValue");
+        BinaryType destType = dest.binary().type("MigrationValue");
+
+        assertEquals(srcType.typeId(), destType.typeId());
+        assertEquals(srcType.fieldNames(), destType.fieldNames());
+        assertEquals(src.context().cacheObjects().binaryContext().metadata0(srcType.typeId()).schemaIds(),
+            dest.context().cacheObjects().binaryContext().metadata0(destType.typeId()).schemaIds());
         assertEquals(2, src.cluster().nodes().size());
         assertEquals(1, dest.cluster().nodes().size());
+    }
+
+    /** Disabled explicit metadata channels are not invoked, while the stored binary cache row is still copied. */
+    @Test
+    public void testSkipExplicitMetadataChannels() throws Exception {
+        startClusters();
+
+        BinaryObject val = src.binary().builder("ImplicitMetadata").setField("value", "payload").build();
+        src.createCache(new CacheConfiguration<Integer, BinaryObject>("skip-metadata")
+            .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, val);
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration()
+            .noBinaryMetadataCreate(true)
+            .noMappingsCreate(true);
+        cfg.cacheData().skipConflictVersion(true);
+        cfg.transformer(BinaryMetadataTransferrer.class, metadata -> {
+            throw new AssertionError("Disabled binary metadata channel must not run.");
+        });
+        cfg.transformer(TypeMappingsTransferrer.class, mapping -> {
+            throw new AssertionError("Disabled type mapping channel must not run.");
+        });
+
+        migrate(cfg);
+
+        assertEquals(1, dest.cache("skip-metadata").size());
+        assertNull(dest.binary().type("ImplicitMetadata"));
+    }
+
+    /** Binary metadata and type mapping transferrers apply configured transformers to each item. */
+    @Test
+    public void testMetadataAndMappingTransformers() throws Exception {
+        startClusters();
+
+        String metadataName = "FilteredMetadata";
+        src.binary().builder(metadataName).setField("value", "payload").build();
+        src.binary().toBinary(new CustomData("Filtered", 1, "test"));
+
+        assertNotNull(typeMapping(src, CustomData.class.getName()));
+
+        AtomicInteger filteredMetadata = new AtomicInteger();
+        AtomicInteger filteredMappings = new AtomicInteger();
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+
+        cfg.transformer(BinaryMetadataTransferrer.class, metadata -> {
+            if (metadataName.equals(metadata.typeName())) {
+                filteredMetadata.incrementAndGet();
+
+                return null;
+            }
+
+            return metadata;
+        });
+        cfg.transformer(TypeMappingsTransferrer.class, mapping -> {
+            if (CustomData.class.getName().equals(mapping.typeName())) {
+                filteredMappings.incrementAndGet();
+
+                return null;
+            }
+
+            return mapping;
+        });
+
+        migrate(cfg);
+
+        assertTrue(filteredMetadata.get() > 0);
+        assertTrue(filteredMappings.get() > 0);
+        assertNull(dest.binary().type(metadataName));
+        assertNull(typeMapping(dest, CustomData.class.getName()));
     }
 
     /** Group selection and create policies apply to data as well as definitions. */
@@ -251,6 +346,58 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         assertEquals("source", dest.cache("selected").get(1));
         assertEquals("retain", dest.cache("selected").get(3));
         assertNull(dest.cache("excluded"));
+
+        IgniteToIgniteMigrationConfiguration createMissing = new IgniteToIgniteMigrationConfiguration();
+        createMissing.cacheSelection().cacheGroupNames("excluded");
+        createMissing.cacheConfigurations().createCacheIfNotExists(true);
+        createMissing.cacheData().skipConflictVersion(true);
+        migrate(createMissing);
+
+        assertEquals("excluded", dest.cache("excluded").get(2));
+    }
+
+    /** --no-cache-create rejects a selected destination cache that is missing. */
+    @Test
+    public void testNoCacheCreateRejectsMissingCache() throws Exception {
+        startClusters();
+
+        src.createCache(new CacheConfiguration<Integer, String>("missing-destination")
+            .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "value");
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheConfigurations().noCacheCreate(true);
+
+        Throwable err = assertThrows(log, () -> {
+            migrate(cfg);
+
+            return null;
+        }, IgniteException.class, "Destination cache does not exist");
+
+        assertNull(err.getCause());
+        assertNull(dest.cache("missing-destination"));
+    }
+
+    /** Cache name transformers cannot map two selected source caches to the same destination name. */
+    @Test
+    public void testDuplicateTransformedCacheNames() throws Exception {
+        startClusters();
+
+        src.createCache(new CacheConfiguration<Integer, String>("first")
+            .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "first");
+        src.createCache(new CacheConfiguration<Integer, String>("second")
+            .setAffinity(new RendezvousAffinityFunction(false, 8))).put(2, "second");
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheSelection().cacheConfigurationTransformer(cache -> cache.setName("duplicate"));
+
+        Throwable err = assertThrows(log, () -> {
+            migrate(cfg);
+
+            return null;
+        }, IgniteException.class, "Invalid or duplicate transformed cache name");
+
+        assertTrue(err.getMessage().contains("Invalid or duplicate transformed cache name"));
+        assertNull(dest.cache("duplicate"));
     }
 
     /** All distributed metastorage is copied to the destination; cluster identity remains distinct. */
@@ -340,7 +487,7 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
 
         IgniteToIgniteMigrationConfiguration tr = new IgniteToIgniteMigrationConfiguration();
         tr.cacheData().skipConflictVersion(true);
-        tr.transformer(CacheConfigurationsMigrationChannel.class, cfg -> {
+        tr.transformer(CacheConfigurationsTransferrer.class, cfg -> {
             cacheSelections.incrementAndGet();
 
             if ("excluded".equals(cfg.sourceName()))
@@ -349,19 +496,69 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             cfg.configuration().setName("copy-" + cfg.sourceName());
 
             return cfg;
-        }).transformer(MetastorageMigrationChannel.class,
+        }).transformer(MetastorageTransferrer.class,
             entry -> "channel.setting".equals(entry.getKey())
                 ? new SimpleImmutableEntry<>(entry.getKey(), "transformed")
-                : entry);
+                : entry).transformer(CacheDataTransferrer.class,
+                    entry -> Integer.valueOf(2).equals(entry.key()) ? null : entry);
         migrate(tr);
 
         IgniteCache<Object, Object> copy = dest.cache("copy-channel").withKeepBinary();
 
         assertEquals(2, cacheSelections.get());
-        assertEquals(2, copy.size());
+        assertEquals(1, copy.size());
         assertEquals("payload", ((BinaryObject)copy.get(1)).field("value"));
+        assertNull(copy.get(2));
         assertNull(dest.cache("excluded"));
         assertEquals("transformed", dest.context().distributedMetastorage().read("channel.setting"));
+    }
+
+    /** A cache-data transformer failure is propagated and migration endpoints are closed. */
+    @Test
+    public void testCacheDataTransformerFailure() throws Exception {
+        startClusters();
+
+        src.createCache(new CacheConfiguration<Integer, String>("transformer-failure")
+            .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "value");
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheData().skipConflictVersion(true);
+        cfg.transformer(CacheDataTransferrer.class, entry -> {
+            throw new IllegalStateException("forced cache-data transformer failure");
+        });
+
+        Throwable err = assertThrows(log, () -> {
+            migrate(cfg);
+
+            return null;
+        }, IgniteException.class, "Migration worker failed.");
+
+        assertTrue(rootCause(err).getMessage().contains("forced cache-data transformer failure"));
+        assertEquals(2, src.cluster().nodes().size());
+        assertEquals(1, dest.cluster().nodes().size());
+    }
+
+    /** Read and write rate limits apply globally to the cache-data reader/writer stages. */
+    @Test
+    public void testReadWriteRateLimits() throws Exception {
+        startClusters();
+
+        IgniteCache<Integer, String> cache = src.createCache(new CacheConfiguration<Integer, String>("rate-limited")
+            .setAffinity(new RendezvousAffinityFunction(false, 8)));
+
+        for (int key = 0; key < 4; key++)
+            cache.put(key, "value-" + key);
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheData().batchSize(1).readThreads(1).writeThreads(1).readLimitInSec(4).writeLimitInSec(4)
+            .skipConflictVersion(true);
+
+        long start = System.nanoTime();
+        migrate(cfg);
+        long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
+
+        assertTrue("Rate limits should throttle the transfer [elapsedMs=" + elapsedMs + ']', elapsedMs >= 500);
+        assertEquals(4, dest.cache("rate-limited").size());
     }
 
     /** Expiration timestamps do not turn into a relative TTL when source versions are skipped. */
@@ -522,6 +719,165 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         assertEquals(64, reads[0].get() + reads[1].get());
     }
 
+    /** Thick source can migrate cache configuration and records to a thin-client destination. */
+    @Test
+    public void testThickToThinClient() throws Exception {
+        startClusters();
+
+        IgniteCache<Integer, Object> cache = src.createCache(new CacheConfiguration<Integer, Object>("thick-to-thin")
+            .setBackups(1).setGroupName("thin-group")
+            .setAffinity(new RendezvousAffinityFunction(false, 16)));
+
+        for (int key = 0; key < 40; key++)
+            cache.put(key, "value-" + key);
+
+        GridCacheContext<Object, Object> srcCtx = src.cachex("thick-to-thin").context();
+        BinaryObject binVal = src.binary().builder("ThinCopyValue").setField("value", "binary").build();
+        long expireTime = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(5);
+        GridCacheVersion ver = new GridCacheVersion(1, 100, 1, (byte)1);
+
+        src.cachex("thick-to-thin").putAllConflict(Collections.singletonMap(srcCtx.toCacheKeyObject(100),
+            new GridCacheDrExpirationInfo(srcCtx.toCacheObject(binVal), ver, 0, expireTime)));
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheData().batchSize(5).readThreads(2).writeThreads(2);
+
+        IgniteToIgniteMigration.start(
+            ThickClientMigrationEndpoint.create(getConfiguration("source-reader").setClientMode(true)),
+            thinEndpoint("dest-0"), cfg.logger(log));
+
+        try (IgniteClient client = thinClient("dest-0")) {
+            org.apache.ignite.client.ClientCache<Integer, Object> dst = client.cache("thick-to-thin").withKeepBinary();
+
+            assertEquals("thin-group", dst.getConfiguration().getGroupName());
+            assertEquals(1, dst.getConfiguration().getBackups());
+            assertEquals(41, dst.sizeLong());
+
+            for (int key = 0; key < 40; key++)
+                assertEquals("value-" + key, dst.get(key));
+
+            assertEquals("binary", ((BinaryObject)dst.get(100)).field("value"));
+        }
+
+        CacheDataRow srcRow = row(grid(src.affinity("thick-to-thin").mapKeyToNode(100)), "thick-to-thin", 100);
+        CacheDataRow destRow = row(grid(dest.affinity("thick-to-thin").mapKeyToNode(100)), "thick-to-thin", 100);
+
+        assertEquals(expireTime, destRow.expireTime());
+        assertEquals(srcRow.version().conflictVersion(), destRow.version().conflictVersion());
+    }
+
+    /** A thick source can retain absolute expiry through a thin destination when source versions are skipped. */
+    @Test
+    public void testThickToThinSkipVersionsPreservesExpiry() throws Exception {
+        startClusters();
+
+        src.createCache(new CacheConfiguration<Integer, String>("thin-expiry")
+            .setAffinity(new RendezvousAffinityFunction(false, 8)));
+        GridCacheContext<Object, Object> srcCtx = src.cachex("thin-expiry").context();
+        long expireTime = System.currentTimeMillis() + TimeUnit.MINUTES.toMillis(5);
+        GridCacheVersion ver = new GridCacheVersion(1, 42, 1, (byte)1);
+
+        src.cachex("thin-expiry").putAllConflict(Collections.singletonMap(srcCtx.toCacheKeyObject(1),
+            new GridCacheDrExpirationInfo(srcCtx.toCacheObject("value"), ver, 0, expireTime)));
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheData().skipConflictVersion(true);
+
+        IgniteToIgniteMigration.start(ThickClientMigrationEndpoint.create(
+            getConfiguration("source-reader").setClientMode(true)), thinEndpoint("dest-0"), cfg.logger(log));
+
+        CacheDataRow destRow = row(dest, "thin-expiry", 1);
+        long expiryDiff = Math.abs(expireTime - destRow.expireTime());
+
+        assertEquals("value", dest.cache("thin-expiry").get(1));
+        assertTrue("Thin cache expiry drifted [source=" + expireTime + ", destination=" + destRow.expireTime() + ']',
+            expiryDiff < TimeUnit.SECONDS.toMillis(1));
+        assertNull(destRow.version().otherClusterVersion());
+    }
+
+    /** Thin source can migrate the exposed cache configuration and records to a thick-client destination. */
+    @Test
+    public void testThinToThickClient() throws Exception {
+        startClusters();
+
+        IgniteCache<Integer, Object> cache = src.createCache(new CacheConfiguration<Integer, Object>("thin-to-thick")
+            .setBackups(1).setGroupName("thin-source-group")
+            .setAffinity(new RendezvousAffinityFunction(false, 16)));
+
+        for (int key = 0; key < 40; key++)
+            cache.put(key, "value-" + key);
+
+        cache.put(100, src.binary().builder("ThinSourceValue").setField("value", "binary").build());
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheData().batchSize(5).readThreads(2).writeThreads(2).useDataStreamer(true)
+            .skipConflictVersion(true).skipExpireTime(true);
+
+        IgniteToIgniteMigration.start(
+            thinEndpoint("source-0"),
+            ThickClientMigrationEndpoint.create(getConfiguration("dest-writer").setClientMode(true)), cfg.logger(log));
+
+        IgniteCache<Integer, Object> dst = dest.cache("thin-to-thick");
+
+        assertEquals("thin-source-group", dst.getConfiguration(CacheConfiguration.class).getGroupName());
+        assertEquals(1, dst.getConfiguration(CacheConfiguration.class).getBackups());
+        assertEquals(41, dst.size());
+
+        for (int key = 0; key < 40; key++)
+            assertEquals("value-" + key, dst.get(key));
+
+        assertEquals("binary", ((BinaryObject)dst.withKeepBinary().get(100)).field("value"));
+    }
+
+    /** Thin cache configuration preserves the exposed SQL QueryEntities when copied to a thick destination. */
+    @Test
+    public void testThinSqlConfigurationToThickClient() throws Exception {
+        startClusters();
+
+        sql(src, "CREATE TABLE THIN_SQL (ID INT PRIMARY KEY, VAL VARCHAR) WITH \"BACKUPS=0\"");
+        sql(src, "INSERT INTO THIN_SQL VALUES (1, 'one'), (2, 'two')");
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheData().skipConflictVersion(true);
+
+        IgniteToIgniteMigration.start(thinEndpoint("source-0"),
+            ThickClientMigrationEndpoint.create(getConfiguration("dest-writer").setClientMode(true)), cfg.logger(log));
+
+        assertEquals(new HashSet<>(sql(src, "SELECT ID, VAL FROM THIN_SQL")),
+            new HashSet<>(sql(dest, "SELECT ID, VAL FROM THIN_SQL")));
+        assertTrue(dest.cacheNames().stream().filter(name -> name.contains("THIN_SQL"))
+            .map(name -> dest.cache(name).getConfiguration(CacheConfiguration.class))
+            .anyMatch(cacheCfg -> !cacheCfg.getQueryEntities().isEmpty()));
+    }
+
+    /** Both endpoints can use thin clients for regular cache data. */
+    @Test
+    public void testThinToThinClient() throws Exception {
+        startClusters();
+
+        IgniteCache<Integer, String> cache = src.createCache(new CacheConfiguration<Integer, String>("thin-to-thin")
+            .setAffinity(new RendezvousAffinityFunction(false, 8)));
+
+        for (int key = 0; key < 25; key++)
+            cache.put(key, "value-" + key);
+
+        IgniteToIgniteMigrationConfiguration cfg = new IgniteToIgniteMigrationConfiguration();
+        cfg.cacheData().batchSize(3).writeThreads(2);
+        cfg.transformer(CacheDataTransferrer.class,
+            entry -> Integer.valueOf(3).equals(entry.key()) ? null : entry);
+
+        IgniteToIgniteMigration.start(thinEndpoint("source-0"), thinEndpoint("dest-0"), cfg.logger(log));
+
+        try (IgniteClient client = thinClient("dest-0")) {
+            org.apache.ignite.client.ClientCache<Integer, String> dst = client.cache("thin-to-thin");
+
+            assertEquals(24, dst.sizeLong());
+
+            for (int key = 0; key < 25; key++)
+                assertEquals(key == 3 ? null : "value-" + key, dst.get(key));
+        }
+    }
+
     /** The command line loads the example XMLs and configures a destination-aware transformer. */
     @Test
     public void testCommandLine() throws Exception {
@@ -533,11 +889,47 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         assertEquals(0, IgniteToIgniteMigrationCommandLine.run(
             "--src-client-node-config", getClass().getResource("/migration/source.xml").toExternalForm(),
             "--dest-client-node-config", getClass().getResource("/migration/destination.xml").toExternalForm(),
-            "--skip-conflict-version", "--batch-size", "3",
+            "--skip-conflict-version", "--skip-expire-time", "--batch-size", "3",
+            "--use-data-streamer", "--allow-overwrite", "--per-node-buffer-size", "7",
+            "--per-node-parallel-operations", "2", "--per-thread-buffer-size", "2",
+            "--timeout", "5000", "--auto-flush-frequency", "100",
             "--cache-config-transformer", RenameTransformer.class.getName(),
             "--cache-config-transformer-parameters", "prefix=copy-"));
 
         assertEquals("value", dest.cache("copy-cli").get(1));
+    }
+
+    /** The CLI also accepts the CacheConfiguration Function transformer variant. */
+    @Test
+    public void testCommandLineFunctionTransformer() throws Exception {
+        startClusters();
+
+        src.createCache(new CacheConfiguration<Integer, String>("function-cli")
+            .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "value");
+
+        assertEquals(0, IgniteToIgniteMigrationCommandLine.run(
+            "--src-client-node-config", getClass().getResource("/migration/source.xml").toExternalForm(),
+            "--dest-client-node-config", getClass().getResource("/migration/destination.xml").toExternalForm(),
+            "--skip-conflict-version", "--cache-config-transformer", FunctionRenameTransformer.class.getName(),
+            "--cache-config-transformer-parameters", "prefix=function-"));
+
+        assertEquals("value", dest.cache("function-function-cli").get(1));
+    }
+
+    /** Thin-client address options launch and run a cache migration through the CLI. */
+    @Test
+    public void testThinClientCommandLine() throws Exception {
+        startClusters();
+
+        src.createCache(new CacheConfiguration<Integer, String>("thin-cli")
+            .setAffinity(new RendezvousAffinityFunction(false, 8))).put(1, "value");
+
+        assertEquals(0, IgniteToIgniteMigrationCommandLine.run(
+            "--src-thin", thinAddress("source-0"),
+            "--dest-thin", thinAddress("dest-0"),
+            "--batch-size", "3"));
+
+        assertEquals("value", dest.cache("thin-cli").get(1));
     }
 
     /** Streamer buffers from several writers must be flushed before the runner returns. */
@@ -582,9 +974,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             migrate(strm2);
 
             return null;
-        }, IgniteCheckedException.class, "Migration worker failed.");
+        }, IgniteException.class, "Migration worker failed.");
 
-        assertTrue(err.getCause().getMessage().contains("DataStreamer cannot preserve entry metadata"));
+        assertTrue(rootCause(err).getMessage().contains("DataStreamer cannot preserve entry metadata"));
     }
 
     /** Source versions cannot be silently discarded by a destination without conflict resolution. */
@@ -600,9 +992,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             migrate(new IgniteToIgniteMigrationConfiguration());
 
             return null;
-        }, IgniteCheckedException.class, "Migration worker failed.");
+        }, IgniteException.class, "Migration worker failed.");
 
-        assertTrue(err.getCause().getMessage().contains("Conflict resolution must be configured"));
+        assertTrue(rootCause(err).getMessage().contains("Conflict resolution must be configured"));
         assertEquals(0, dest.cache("versions").size());
     }
 
@@ -615,6 +1007,23 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             IgniteToIgniteMigration.start(
                 ThickClientMigrationEndpoint.create(getConfiguration("source-reader").setClientMode(true)),
                 ThickClientMigrationEndpoint.create(getConfiguration("source-writer").setClientMode(true)),
+                new IgniteToIgniteMigrationConfiguration().logger(log));
+
+            return null;
+        }, IgniteCheckedException.class, "Source and destination must be different clusters.");
+
+        assertEquals(2, src.cluster().nodes().size());
+    }
+
+    /** Same-cluster detection also compares node IDs when thick and thin client endpoints are mixed. */
+    @Test
+    public void testSameClusterMixedClients() throws Exception {
+        startClusters();
+
+        assertThrows(log, () -> {
+            IgniteToIgniteMigration.start(
+                ThickClientMigrationEndpoint.create(getConfiguration("source-reader").setClientMode(true)),
+                thinEndpoint("source-0"),
                 new IgniteToIgniteMigrationConfiguration().logger(log));
 
             return null;
@@ -710,9 +1119,9 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
                 migrate(lockCfg);
 
                 return null;
-            }, IgniteCheckedException.class, "Migration worker failed.");
+            }, IgniteException.class, "Migration worker failed.");
 
-            assertTrue(err.getCause().getMessage().contains("Cannot migrate a lock with an owner"));
+            assertTrue(rootCause(err).getMessage().contains("Cannot migrate a lock with an owner"));
         }
         finally {
             lock.unlock();
@@ -742,6 +1151,28 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
             ThickClientMigrationEndpoint.create(getConfiguration("dest-writer").setClientMode(true)),
             cfg.logger(log)
         );
+    }
+
+    /** Creates an owned thin migration endpoint connected to a test cluster. */
+    private ThinClientMigrationEndpoint thinEndpoint(String nodeName) {
+        return ThinClientMigrationEndpoint.create(thinConfiguration(nodeName));
+    }
+
+    /** Thin-client listener address for the named test cluster. */
+    private String thinAddress(String nodeName) {
+        IgniteEx server = grid(nodeName);
+
+        return "127.0.0.1:" + server.context().clientListener().port();
+    }
+
+    /** Opens a temporary thin client for test assertions. */
+    private IgniteClient thinClient(String nodeName) {
+        return Ignition.startClient(thinConfiguration(nodeName));
+    }
+
+    /** Thin-client configuration targeting a server in the named cluster. */
+    private ClientConfiguration thinConfiguration(String nodeName) {
+        return new ClientConfiguration().setAddresses(thinAddress(nodeName));
     }
 
     /** */
@@ -810,6 +1241,45 @@ public class IgniteToIgniteMigrationTest extends GridCommonAbstractTest {
         @Override public CacheConfiguration<?, ?> apply(IgniteConfiguration destCfg, CacheConfiguration<?, ?> cfg) {
             assertTrue(destCfg.isClientMode());
 
+            return cfg.setName(prefix + cfg.getName());
+        }
+    }
+
+    /** Finds a class-name mapping in the node's local marshaller context snapshot. */
+    private static MigrationTypeMapping typeMapping(IgniteEx node, String typeName) {
+        List<Map<Integer, MappedName>> mappings = node.context().marshallerContext().getCachedMappings();
+
+        for (int platform = 0; platform < mappings.size(); platform++) {
+            for (Map.Entry<Integer, MappedName> entry : mappings.get(platform).entrySet()) {
+                if (typeName.equals(entry.getValue().className()))
+                    return new MigrationTypeMapping((byte)platform, entry.getKey(), typeName);
+            }
+        }
+
+        return null;
+    }
+
+    /** Gets the deepest cause in an exception chain. */
+    private static Throwable rootCause(Throwable err) {
+        while (err.getCause() != null)
+            err = err.getCause();
+
+        return err;
+    }
+
+    /** CLI transformer implementing the source-compatible Function variant. */
+    public static class FunctionRenameTransformer
+        implements Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> {
+        /** */
+        private String prefix;
+
+        /** Configures this transformer from CLI parameters. */
+        public void configure(Map<String, String> parameters) {
+            prefix = parameters.get("prefix");
+        }
+
+        /** {@inheritDoc} */
+        @Override public CacheConfiguration<?, ?> apply(CacheConfiguration<?, ?> cfg) {
             return cfg.setName(prefix + cfg.getName());
         }
     }

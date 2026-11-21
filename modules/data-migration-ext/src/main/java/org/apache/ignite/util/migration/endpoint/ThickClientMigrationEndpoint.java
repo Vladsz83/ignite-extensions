@@ -17,14 +17,21 @@
 
 package org.apache.ignite.util.migration.endpoint;
 
+import java.util.LinkedHashMap;
+import java.util.Map;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.Ignition;
 import org.apache.ignite.configuration.IgniteConfiguration;
 import org.apache.ignite.internal.IgniteEx;
-import org.apache.ignite.util.migration.MigrationOrigin;
+import org.apache.ignite.internal.binary.BinaryMetadata;
+import org.apache.ignite.util.migration.MigrationCategory;
+import org.apache.ignite.util.migration.MigrationDestination;
+import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
+import org.apache.ignite.util.migration.category.cache.data.MigrationEntry;
+import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
 
 /** Thick client (in-JVM) migration endpoint. */
-public class ThickClientMigrationEndpoint implements MigrationOrigin<IgniteEx> {
+public class ThickClientMigrationEndpoint implements MigrationDestination {
     /** */
     private final IgniteConfiguration cfg;
 
@@ -51,12 +58,58 @@ public class ThickClientMigrationEndpoint implements MigrationOrigin<IgniteEx> {
     }
 
     /** {@inheritDoc} */
-    @Override public IgniteEx origin() {
-        return ig;
+    /** {@inheritDoc} */
+    @Override public LinkedHashMap<MigrationCategory, Class<?>> supportedCategories() {
+        LinkedHashMap<MigrationCategory, Class<?>> categories = new LinkedHashMap<>();
+
+        categories.put(MigrationCategory.BINARY_METADATA, BinaryMetadata.class);
+        categories.put(MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class);
+        categories.put(MigrationCategory.CACHE_CONFIGURATION, MigrationCache.class);
+        categories.put(MigrationCategory.METASTORAGE_ENTRY, Map.Entry.class);
+        categories.put(MigrationCategory.CACHE_ENTRY, MigrationEntry.class);
+
+        return categories;
     }
 
     /** {@inheritDoc} */
-    @Override public synchronized void connect() throws IgniteCheckedException {
+    @Override public void accept(MigrationCategory category, Object data) throws IgniteCheckedException {
+        if (ig == null)
+            throw new IgniteCheckedException("Migration destination is not connected.");
+
+        try {
+            switch (category) {
+                case BINARY_METADATA:
+                    if (!(data instanceof BinaryMetadata))
+                        throw new IgniteCheckedException("Expected BinaryMetadata for migration category: " + category);
+
+                    BinaryMetadata metadata = (BinaryMetadata)data;
+
+                    ig.context().cacheObjects().binaryContext().updateMetadata(metadata.typeId(), metadata, false);
+
+                    return;
+
+                case TYPE_MAPPING:
+                    if (!(data instanceof MigrationTypeMapping))
+                        throw new IgniteCheckedException("Expected MigrationTypeMapping for migration category: " + category);
+
+                    MigrationTypeMapping mapping = (MigrationTypeMapping)data;
+
+                    ig.context().cacheObjects().binaryContext().registerUserClassName(
+                        mapping.typeId(), mapping.typeName(), false, false, mapping.platformId());
+
+                    return;
+
+                default:
+                    throw new IgniteCheckedException("Destination does not accept migration category: " + category);
+            }
+        }
+        catch (RuntimeException e) {
+            throw new IgniteCheckedException("Failed to accept migration data [category=" + category + "].", e);
+        }
+    }
+
+    /** {@inheritDoc} */
+    @Override public synchronized IgniteEx connect() throws IgniteCheckedException {
         if (closed)
             throw new IgniteCheckedException("Migration client node is already closed.");
 
@@ -68,6 +121,8 @@ public class ThickClientMigrationEndpoint implements MigrationOrigin<IgniteEx> {
 
             if (!ig.cluster().state().active())
                 throw new IgniteCheckedException("Migration requires an active cluster.");
+
+            return ig;
         }
         catch (RuntimeException e) {
             throw new IgniteCheckedException("Failed to start migration client node.", e);

@@ -21,7 +21,6 @@
 
     <bean id="migration.cfg"
           class="org.apache.ignite.util.migration.IgniteToIgniteMigrationConfiguration">
-        <property name="migrationThreads" value="8"/>
         <property name="noBinaryMetadataCreate" value="true"/>
         <property name="noMappingsCreate" value="true"/>
 

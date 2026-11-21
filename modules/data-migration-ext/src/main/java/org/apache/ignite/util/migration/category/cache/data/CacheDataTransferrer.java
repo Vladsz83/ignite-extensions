@@ -35,8 +35,9 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -69,16 +70,23 @@ import org.apache.ignite.internal.util.BasicRateLimiter;
 import org.apache.ignite.internal.util.lang.GridCloseableIterator;
 import org.apache.ignite.internal.util.lang.IgniteOutClosureX;
 import org.apache.ignite.internal.util.typedef.internal.U;
-import org.apache.ignite.util.migration.MigrationOrigin;
+import org.apache.ignite.util.migration.MigrationCategory;
+import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.AbstractMigrationChannel;
+import org.apache.ignite.util.migration.category.AbstractCategoryTransfer;
 import org.apache.ignite.util.migration.category.cache.configuration.MigrationCachePlan;
 
 import static org.apache.ignite.internal.processors.cache.query.GridCacheQueryType.SCAN;
 import static org.apache.ignite.plugin.security.SecurityPermission.CACHE_READ;
 
 /** Transfers cache records through partition readers and a bounded queue of write batches. */
-public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx, IgniteEx, MigrationEntry> {
+public class CacheDataTransferrer extends AbstractCategoryTransfer<MigrationEntry> {
+    /** Source connection. */
+    private final Object from;
+
+    /** Destination connection. */
+    private final Object to;
+
     /** */
     private final CacheDataMigrationConfiguration cfg;
 
@@ -118,6 +126,18 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
     /** */
     private int partsCnt;
 
+    /** Thick source connection for this transfer. */
+    private IgniteEx srcIg;
+
+    /** Thick destination connection for this transfer. */
+    private IgniteEx destIg;
+
+    /** Whether binary metadata creation is disabled. */
+    private final boolean noBinaryMetadataCreate;
+
+    /** Whether platform type mapping registration is disabled. */
+    private final boolean noMappingsCreate;
+
     /**
      * @param from Connected source.
      * @param to Connected destination.
@@ -125,49 +145,111 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
      * @param cfg Data transfer knobs.
      * @param cachePlan Cache selection for this migration.
      */
-    public CacheDataMigrationChannel(
-        MigrationOrigin<IgniteEx> from,
-        MigrationOrigin<IgniteEx> to,
+    public CacheDataTransferrer(
+        Object from,
+        Object to,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
         MigrationCachePlan cachePlan
     ) {
-        super(from, to, log);
+        this(from, to, log, cfg, cachePlan, false, false);
+    }
 
+    /**
+     * @param from Connected source.
+     * @param to Connected destination.
+     * @param log Migration logger.
+     * @param cfg Data transfer knobs.
+     * @param cachePlan Cache selection for this migration.
+     * @param noBinaryMetadataCreate Whether binary metadata creation is disabled.
+     * @param noMappingsCreate Whether mapping registration is disabled.
+     */
+    public CacheDataTransferrer(
+        Object from,
+        Object to,
+        IgniteLogger log,
+        CacheDataMigrationConfiguration cfg,
+        MigrationCachePlan cachePlan,
+        boolean noBinaryMetadataCreate,
+        boolean noMappingsCreate
+    ) {
+        super(log);
+
+        this.from = from;
+        this.to = to;
         this.cfg = cfg;
         this.cachePlan = cachePlan;
+        this.noBinaryMetadataCreate = noBinaryMetadataCreate;
+        this.noMappingsCreate = noMappingsCreate;
         batches = new ArrayBlockingQueue<>(cfg.queueCapacity());
-        readers = new AtomicInteger(cfg.readThreads());
+        readers = new AtomicInteger();
         readLimiter = new BasicRateLimiter(cfg.readLimitInSec());
         writeLimiter = new BasicRateLimiter(cfg.writeLimitInSec());
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(ExecutorService pool, MigrationTransformer<MigrationEntry> transformer)
-        throws IgniteCheckedException {
+    @Override public MigrationCategory category() {
+        return MigrationCategory.CACHE_ENTRY;
+    }
+
+    /** {@inheritDoc} */
+    @Override public Class<?> dataClass() {
+        return MigrationEntry.class;
+    }
+
+    /** {@inheritDoc} */
+    @Override protected void doTransfer(
+        MigrationDestination dest,
+        MigrationTransformer<MigrationEntry> transformer
+    ) throws IgniteCheckedException {
+        Object src = from;
+        Object destOrigin = to;
+
+        if (!(src instanceof IgniteEx) || !(destOrigin instanceof IgniteEx)) {
+            new ThinClientCacheDataTransferrer(src, destOrigin, dest, log, cfg, cachePlan, this,
+                noBinaryMetadataCreate, noMappingsCreate).transfer(transformer);
+
+            return;
+        }
+
+        srcIg = (IgniteEx)src;
+        destIg = (IgniteEx)destOrigin;
+
         Map<String, String> cacheNames = cachePlan.cacheNames();
-        List<Map.Entry<String, Integer>> parts = partitions(from.origin(), cacheNames.keySet());
+        List<Map.Entry<String, Integer>> parts = partitions(srcIg, cacheNames.keySet());
 
         pending.addAll(parts);
         partsCnt = parts.size();
 
-        int threads = cfg.readThreads() + cfg.writeThreads();
-        ExecutorCompletionService<Void> completion = new ExecutorCompletionService<>(pool);
+        CacheDataMigrationThreadPools workers = new CacheDataMigrationThreadPools(cfg);
+        readers.set(workers.readerThreads());
+
+        info("Cache data worker pools [readers=" + workers.readerThreads() + ", readerPool=dedicated, writers=" +
+            workers.writerThreads() + ", writerPool=dedicated].");
+
+        int threads = workers.readerThreads() + workers.writerThreads();
+        BlockingQueue<Future<Void>> completed = new LinkedBlockingQueue<>();
+        ExecutorCompletionService<Void> readerCompletion =
+            new ExecutorCompletionService<>(workers.readerPool(), completed);
+        ExecutorCompletionService<Void> writerCompletion =
+            new ExecutorCompletionService<>(workers.writerPool(), completed);
         ScheduledExecutorService reporter = Executors.newSingleThreadScheduledExecutor(
             new IgniteThreadFactory(null, "data-migration-log"));
+        boolean success = false;
 
         try {
             reporter.scheduleAtFixedRate(this::logProgress, 1, 1, TimeUnit.MINUTES);
 
-            for (int i = 0; i < cfg.writeThreads(); i++)
-                completion.submit(this::write);
+            for (int i = 0; i < workers.writerThreads(); i++)
+                writerCompletion.submit(this::write);
 
-            for (int i = 0; i < cfg.readThreads(); i++)
-                completion.submit(this::read);
+            for (int i = 0; i < workers.readerThreads(); i++)
+                readerCompletion.submit(() -> read(transformer));
 
             for (int i = 0; i < threads; i++)
-                completion.take().get();
+                completed.take().get();
 
+            success = true;
             logProgress();
         }
         catch (InterruptedException e) {
@@ -182,7 +264,13 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
             reporter.shutdownNow();
 
             cursors.forEach(cursor -> U.close(cursor, log));
-            streamers.values().forEach(streamer -> streamer.close(true));
+
+            try {
+                closeStreamers(success);
+            }
+            finally {
+                workers.stop(success);
+            }
         }
     }
 
@@ -193,19 +281,44 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
 
             if (batch != null) {
                 writeLimiter.acquire(batch.entries.size());
-                writeBatch(to.origin(), batch.cache, batch.entries);
+                writeBatch(destIg, batch.cache, batch.entries);
                 written.addAndGet(batch.entries.size());
             }
         }
 
-        streamers.values().forEach(IgniteDataStreamer::close);
-        streamers.clear();
-
         return null;
     }
 
+    /** Flushes streamers once every writer has finished. */
+    private void closeStreamers(boolean success) throws IgniteCheckedException {
+        IgniteCheckedException error = null;
+
+        for (IgniteDataStreamer<Object, Object> streamer : streamers.values()) {
+            try {
+                if (success)
+                    streamer.close();
+                else
+                    streamer.close(true);
+            }
+            catch (RuntimeException e) {
+                if (success && error == null)
+                    error = new IgniteCheckedException("Failed to flush DataStreamer migration buffers.", e);
+                else if (error != null)
+                    error.addSuppressed(e);
+                else
+                    log.warning("Failed to cancel DataStreamer after migration failure.", e);
+            }
+        }
+
+        streamers.clear();
+
+        if (error != null)
+            throw error;
+    }
+
     /** */
-    private Void read() throws IgniteCheckedException, InterruptedException {
+    private Void read(MigrationTransformer<MigrationEntry> transformer)
+        throws IgniteCheckedException, InterruptedException {
         try {
             Map.Entry<String, Integer> task;
 
@@ -213,7 +326,7 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
                 if (Thread.currentThread().isInterrupted())
                     throw new InterruptedException();
 
-                readPartition(task);
+                readPartition(task, transformer);
             }
 
             return null;
@@ -224,7 +337,10 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
     }
 
     /** */
-    private void readPartition(Map.Entry<String, Integer> task) throws IgniteCheckedException, InterruptedException {
+    private void readPartition(
+        Map.Entry<String, Integer> task,
+        MigrationTransformer<MigrationEntry> transformer
+    ) throws IgniteCheckedException, InterruptedException {
         long start = System.nanoTime();
         long cnt = 0;
         List<MigrationEntry> batch = new ArrayList<>(cfg.batchSize());
@@ -234,7 +350,7 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
 
         info("Reading partition [cache=" + cache + ", partition=" + part + "].");
 
-        QueryCursor<MigrationEntry> cursor = readCursor(from.origin(), cache, part);
+        QueryCursor<MigrationEntry> cursor = readCursor(srcIg, cache, part);
 
         cursors.add(cursor);
 
@@ -249,6 +365,12 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
                 readLimiter.acquire(1);
                 read.incrementAndGet();
                 cnt++;
+
+                if (transformer != null)
+                    item = transformer.transform(item);
+
+                if (item == null)
+                    continue;
 
                 batch.add(item);
 
@@ -278,7 +400,7 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
     // --- Source-side helpers ---
 
     /** Partitions interleaved by primary server. */
-    private static List<Map.Entry<String, Integer>> partitions(IgniteEx ig, Collection<String> cacheNames) {
+    static List<Map.Entry<String, Integer>> partitions(IgniteEx ig, Collection<String> cacheNames) {
         Map<UUID, Queue<Map.Entry<String, Integer>>> perNode = new LinkedHashMap<>();
 
         for (String cache : cacheNames) {
@@ -312,7 +434,7 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
 
     /** */
     @SuppressWarnings("unchecked")
-    private QueryCursor<MigrationEntry> readCursor(IgniteEx ig, String cache, int part) {
+    QueryCursor<MigrationEntry> readCursor(IgniteEx ig, String cache, int part) {
         openCache(ig, cache);
 
         GridCacheContext<Object, Object> ctx = ig.cachex(cache).context();
@@ -534,4 +656,5 @@ public class CacheDataMigrationChannel extends AbstractMigrationChannel<IgniteEx
             this.entries = entries;
         }
     }
+
 }

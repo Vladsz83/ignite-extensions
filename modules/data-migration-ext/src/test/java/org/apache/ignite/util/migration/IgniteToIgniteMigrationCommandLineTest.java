@@ -21,6 +21,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
+import org.apache.ignite.configuration.CacheConfiguration;
+import org.apache.ignite.util.migration.category.cache.data.CacheDataMigrationConfiguration;
 import org.junit.Test;
 import org.springframework.context.support.GenericApplicationContext;
 
@@ -29,6 +32,7 @@ import static org.apache.ignite.util.migration.IgniteToIgniteMigrationCommandLin
 import static org.apache.ignite.util.migration.IgniteToIgniteMigrationCommandLine.parse;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
@@ -41,16 +45,46 @@ public class IgniteToIgniteMigrationCommandLineTest {
         assertThrows(IllegalArgumentException.class, () -> parse("--src-client-node-config", "src.xml"));
 
         invalid("batch-size must be positive", "--batch-size", "0");
+        invalid("read-threads must be positive", "--read-threads", "0");
         invalid("read-threads must be positive", "--read-threads", "-1");
+        invalid("write-threads must be positive", "--write-threads", "0");
+        invalid("write-threads must be positive", "--write-threads", "-1");
+        invalid("non-negative", "--read-limit-in-sec", "-1");
+        invalid("non-negative", "--write-limit-in-sec", "-1");
         invalid("queue-capacity must be positive", "--queue-capacity", "0");
         invalid("Duplicate option", "--batch-size", "1", "--batch-size", "2");
         invalid("Missing value", "--batch-size");
         invalid("mutually exclusive", "--no-cache-create", "--create-cache-if-not-exists");
+        invalid("Cache group names must not be empty", "--cache-group-names", "accounts,,reference");
+        assertThrows(IllegalArgumentException.class, () -> parse(
+            "--src-client-node-config", "src.xml", "--dest-client-node-config", "dest.xml",
+            "--skip-conflict-version", "--skip-cdc-info"));
         invalid("Expected true or false", "--move-data-structures", "yes");
         invalid("Transformer parameters require", "--cache-config-transformer-parameters", "backups=0");
         invalid("Unknown or unsupported option", "--unknown");
         invalid("require --use-data-streamer", "--allow-overwrite");
         invalid("Invalid DataStreamer setting", "--use-data-streamer", "--per-node-buffer-size", "0");
+        invalid("Invalid DataStreamer setting", "--use-data-streamer", "--per-node-parallel-operations", "0");
+        invalid("Invalid DataStreamer setting", "--use-data-streamer", "--per-thread-buffer-size", "0");
+        invalid("Invalid DataStreamer setting", "--use-data-streamer", "--timeout", "-2");
+        invalid("Invalid DataStreamer setting", "--use-data-streamer", "--auto-flush-frequency", "-1");
+        assertThrows(IllegalArgumentException.class, () -> parse(
+            "--src-client-node-config", "src.xml", "--src-thin", "127.0.0.1:10800",
+            "--dest-thin", "127.0.0.1:10801"));
+        assertThrows(IllegalArgumentException.class, () -> parse(
+            "--src-thin", "127.0.0.1:10800", "--dest-client-node-config", "dest.xml",
+            "--dest-thin", "127.0.0.1:10801"));
+        assertThrows(IllegalArgumentException.class, () -> parse(
+            "--src-thin", "127.0.0.1:10800", "--dest-thin", "127.0.0.1:10801", "--use-data-streamer"));
+    }
+
+    /** DataStreamer requires a thick-client destination, including when the thin configuration is loaded from XML. */
+    @Test
+    public void testDataStreamerRequiresThickDestination() {
+        IllegalArgumentException err = assertThrows(IllegalArgumentException.class, () -> parse(
+            "--src-thin", "127.0.0.1:10800", "--dest-thin-config", "destination.xml", "--use-data-streamer"));
+
+        assertEquals("DataStreamer requires --dest-client-node-config.", err.getMessage());
     }
 
     /** Help succeeds without any connection parameters. */
@@ -68,6 +102,60 @@ public class IgniteToIgniteMigrationCommandLineTest {
         IgniteToIgniteMigrationConfiguration cfg = IgniteToIgniteMigrationCommandLine.configuration(options);
 
         assertTrue(cfg.metastorage().ignoreDefaultFilter());
+        assertEquals(256, cfg.cacheData().batchSize());
+        assertEquals(1, cfg.cacheData().readThreads());
+        assertEquals(1, cfg.cacheData().writeThreads());
+        assertFalse(cfg.cacheData().isReadThreadsConfigured());
+        assertFalse(cfg.cacheData().isWriteThreadsConfigured());
+        assertEquals(CacheDataMigrationConfiguration.DFLT_QUEUE_CAPACITY, cfg.cacheData().queueCapacity());
+
+        IgniteToIgniteMigrationConfiguration aliasCfg = IgniteToIgniteMigrationCommandLine.configuration(parse(
+            "--src-client-node-config", "src.xml", "--dest-client-node-config", "dest.xml", "--skip-cdc-info"));
+
+        assertTrue(aliasCfg.cacheData().skipConflictVersion());
+
+        Map<String, String> thinOptions = parse("--src-thin", "127.0.0.1:10800,127.0.0.1:10801",
+            "--dest-thin-config", "dest-thin.xml");
+
+        assertTrue(thinOptions.containsKey("src-thin"));
+        assertEquals("dest-thin.xml", thinOptions.get("dest-thin-config"));
+
+        IgniteToIgniteMigrationConfiguration explicit = configuration(parse(
+            "--src-client-node-config", "src.xml", "--dest-client-node-config", "dest.xml", "--read-threads", "3"));
+
+        assertTrue(explicit.cacheData().isReadThreadsConfigured());
+        assertFalse(explicit.cacheData().isWriteThreadsConfigured());
+        assertEquals(3, explicit.cacheData().readThreads());
+    }
+
+    /** Reader and writer counts have independent single-thread defaults and explicit overrides. */
+    @Test
+    public void testCacheWorkerThreadDefaultsAndOverrides() {
+        CacheDataMigrationConfiguration cfg = new CacheDataMigrationConfiguration();
+
+        assertEquals(1, cfg.readThreads());
+        assertEquals(1, cfg.writeThreads());
+        assertFalse(cfg.isReadThreadsConfigured());
+        assertFalse(cfg.isWriteThreadsConfigured());
+
+        cfg.readThreads(3);
+
+        assertEquals(3, cfg.readThreads());
+        assertEquals(1, cfg.writeThreads());
+        assertTrue(cfg.isReadThreadsConfigured());
+        assertFalse(cfg.isWriteThreadsConfigured());
+
+        cfg = new CacheDataMigrationConfiguration().writeThreads(2);
+
+        assertEquals(1, cfg.readThreads());
+        assertEquals(2, cfg.writeThreads());
+        assertFalse(cfg.isReadThreadsConfigured());
+        assertTrue(cfg.isWriteThreadsConfigured());
+
+        cfg = new CacheDataMigrationConfiguration().readThreads(3).writeThreads(5);
+
+        assertEquals(3, cfg.readThreads());
+        assertEquals(5, cfg.writeThreads());
     }
 
     /** Configuration XML is loaded and all properties are applied correctly. */
@@ -83,7 +171,6 @@ public class IgniteToIgniteMigrationCommandLineTest {
             cfg.validate();
 
             // Shared settings
-            assertEquals(8, cfg.getMigrationThreads());
             assertTrue(cfg.isNoBinaryMetadataCreate());
             assertTrue(cfg.isNoMappingsCreate());
 
@@ -100,6 +187,8 @@ public class IgniteToIgniteMigrationCommandLineTest {
             assertEquals(256, cfg.getCacheData().getBatchSize());
             assertEquals(4, cfg.getCacheData().getReadThreads());
             assertEquals(8, cfg.getCacheData().getWriteThreads());
+            assertTrue(cfg.getCacheData().isReadThreadsConfigured());
+            assertTrue(cfg.getCacheData().isWriteThreadsConfigured());
             assertEquals(128, cfg.getCacheData().getQueueCapacity());
             assertEquals(1000, cfg.getCacheData().getReadLimitInSec());
             assertEquals(2000, cfg.getCacheData().getWriteLimitInSec());
@@ -118,7 +207,7 @@ public class IgniteToIgniteMigrationCommandLineTest {
     public void testXmlConfigurationWithCliOverride() throws Exception {
         Map<String, String> options = parse("--src-client-node-config", "src.xml",
             "--dest-client-node-config", "dest.xml", "--config", "migration/migration-cfg.xml",
-            "--batch-size", "512");
+            "--batch-size", "512", "--read-threads", "2");
 
         IgniteToIgniteMigrationConfiguration cfg = configuration(options);
 
@@ -128,14 +217,17 @@ public class IgniteToIgniteMigrationCommandLineTest {
 
             IgniteToIgniteMigrationConfiguration xmlCfg = beans.values().iterator().next();
 
-            // Simulate merge: CLI batch-size=512 should win over XML batch-size=256
-            // (merge method is package-private, verify via the public path)
-            cfg.cacheData().batchSize(512);
+            Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer = Function.identity();
+            xmlCfg.cacheSelection().cacheConfigurationTransformer(transformer);
 
-            // Other values come from XML
-            assertEquals(8, xmlCfg.getMigrationThreads());
-            assertTrue(xmlCfg.getCacheData().isSkipConflictVersion());
-            assertEquals(256, xmlCfg.getCacheData().getBatchSize());
+            IgniteToIgniteMigrationCommandLine.merge(cfg, xmlCfg, options);
+
+            assertTrue(cfg.getCacheData().isSkipConflictVersion());
+            assertEquals(2, cfg.getCacheData().getReadThreads());
+            assertEquals(8, cfg.getCacheData().getWriteThreads());
+            assertEquals(128, cfg.getCacheData().getQueueCapacity());
+            assertEquals(1, cfg.getMetastorage().getFilters().size());
+            assertSame(transformer, cfg.getCacheSelection().getCacheConfigurationTransformer());
         }
 
         // CLI-specified value takes precedence

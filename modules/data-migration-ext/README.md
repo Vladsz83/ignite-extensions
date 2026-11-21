@@ -18,12 +18,16 @@
 # Ignite data migration
 
 A one-shot cluster-to-cluster migration utility. It connects to two independent
-Ignite clusters using client nodes. Source and destination server counts,
+Ignite clusters using thick or thin clients. Source and destination server counts,
 consistent IDs, persistence settings and affinity configurations may differ.
 Data is read directly from the source and written to the destination.
 
-This implementation provides the client-node path and DataStreamer loading.
-Thin-client connections are the next implementation stage described in the ticket plan.
+Thin-client mode transfers cache configurations exposed through the thin API and
+cache records using `ScanQuery` and ordinary cache writes. It does not transfer
+explicit binary metadata/type mappings, distributed metastorage, SQL views, or
+data-structure caches. Entry versions and exact expiration timestamps are not
+available through thin-client scans. Thin-client cache configuration is a subset;
+custom affinity functions fall back to the default rendezvous affinity.
 
 ## Build and install
 
@@ -35,7 +39,7 @@ mvn -B -ntp -f modules/data-migration-ext/pom.xml package -Pcheckstyle
 
 Use a matching Ignite 2.20.0-SNAPSHOT installation. Copy the module JAR and its
 runtime dependencies from `target/libs` to an installation library directory,
-for example `$IGNITE_HOME/libs/data-migration-ext`. Copy `bin/data-migration.sh`
+for example `$IGNITE_HOME/libs/data-migration-ext`. Copy `bin/ignite-to-ignite.sh`
 to `$IGNITE_HOME/bin` and the example XML files to `$IGNITE_HOME/config/migration`.
 The `extension-release` Maven profile also builds a binary ZIP with this layout.
 
@@ -51,13 +55,25 @@ The `peerClassLoadingEnabled` settings in each XML must match its cluster.
 
 ## Run
 
-Each connection XML must contain exactly one `IgniteConfiguration` bean.
-The utility starts it in client mode with a unique instance name. The supplied
-examples connect to two local clusters on discovery ports 47500 and 47600;
-replace their discovery addresses for your environment.
+Thick-client connection XML must contain exactly one `IgniteConfiguration` bean;
+the utility starts it in client mode with a unique instance name. Thin-client
+connection XML must contain exactly one `ClientConfiguration` bean. Alternatively,
+pass comma-separated thin-client addresses directly. The supplied thick-client
+examples use discovery ports 47500 and 47600; replace their addresses for your
+environment.
 
 ```shell
-bin/data-migration.sh \
+bin/ignite-to-ignite.sh \
+  --src-thin 127.0.0.1:10800 \
+  --dest-thin-config config/migration/destination-thin.xml \
+  --cache-group-names accounts,reference \
+  --batch-size 256 --read-threads 4 --write-threads 4
+```
+
+Thick-to-thick mode remains available:
+
+```shell
+bin/ignite-to-ignite.sh \
   --src-client-node-config config/migration/source.xml \
   --dest-client-node-config config/migration/destination.xml \
   --skip-conflict-version \
@@ -74,6 +90,8 @@ The resolver's selection rules also apply to existing destination entries.
 Source and destination must be active, distinct clusters. Read permission is
 required on selected source caches and write/create permissions on the destination.
 Selected distributed metadata operations also require their usual cluster permissions.
+If CDC replication is enabled on the destination, configure the same `dcId` on both
+clusters to avoid re-sending migrated records through an additional CDC cycle.
 
 For a transactionally consistent copy, stop source writes externally for the
 duration of migration. Scan queries do not provide snapshot isolation. Synchronize
@@ -84,19 +102,22 @@ the cache's configured access-expiration behavior.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `--src-client-node-config path` | Required | Source Spring XML. |
-| `--dest-client-node-config path` | Required for built-in destination | Destination Spring XML. |
-| `--destination class` | None | Public no-argument `MigrationOrigin`, instead of destination XML. |
+| `--src-client-node-config path` | One source option required | Source Spring XML with `IgniteConfiguration`. |
+| `--src-thin host:port,...` | One source option required | Source thin-client addresses. |
+| `--src-thin-config path` | One source option required | Spring XML with `ClientConfiguration`. |
+| `--dest-client-node-config path` | One destination option required | Destination Spring XML with `IgniteConfiguration`. |
+| `--dest-thin host:port,...` | One destination option required | Destination thin-client addresses. |
+| `--dest-thin-config path` | One destination option required | Spring XML with `ClientConfiguration`. |
+| `--destination class` | None | Public no-argument `MigrationDestination`, instead of a built-in destination. |
 | `--cache-group-names a,b` | All | Source groups; an ungrouped cache is selected by its cache name. |
 | `--no-cache-create` | false | Require all selected destination caches to exist. |
 | `--create-cache-if-not-exists` | false | Accept existing destination caches and create missing ones. |
 | `--no-binary-metadata-create` | false | Skip explicit binary metadata registration. |
 | `--no-mappings-create` | false | Skip explicit type mapping registration. |
 | `--ignore-default-filter` | false | Also copy distributed metastorage entries that are not portable to the destination cluster (cluster identity, graceful-shutdown, and SQL views even when the destination has no SQL schema). |
-| `--batch-size N` | 1 | Maximum entries in a write batch. |
-| `--read-threads N` | 1 | Partition reader threads. |
-| `--write-threads N` | 1 | Writer threads. |
-| `--migration-threads N` | 4 | Thread count of the shared executor used by all channels. |
+| `--batch-size N` | 256 | Maximum entries in a write batch. |
+| `--read-threads N` | 1 | Number of cache-data reader threads in its dedicated pool. |
+| `--write-threads N` | 1 | Number of cache-data writer threads in its dedicated pool. |
 | `--queue-capacity N` | 64 | Maximum queued batches; a full queue blocks readers. |
 | `--read-limit-in-sec N` | 0 | Global read rate in entries/second; zero is unlimited. |
 | `--write-limit-in-sec N` | 0 | Global write submission rate; zero is unlimited. |
@@ -108,9 +129,38 @@ the cache's configured access-expiration behavior.
 | `--help` | | Print usage and exit successfully. |
 
 `--no-binary-metdata-create` is accepted as an alias for the spelling in the ticket.
+`--skip-cdc-info` is accepted as an alias for `--skip-conflict-version`.
 `--no-cache-create` and `--create-cache-if-not-exists` are mutually exclusive.
 Without either option, an existing selected destination cache is an error.
 The utility does not delete destination records absent from the source.
+
+### Thin-client limitations
+
+When either endpoint uses a thin client, the pipeline transfers selected cache
+configuration and records. A thin source also transfers binary metadata known to its
+local binary context and Java mappings whose classes are loadable by the migration
+process. Metadata and mappings unavailable to the thin client cannot be enumerated;
+non-Java mappings are not exposed. Distributed metastorage, SQL views, and data-structure
+state are skipped. Cache-data transfer also registers metadata and Java mappings found
+in transferred entries unless `--no-binary-metadata-create` or `--no-mappings-create`
+disables it.
+A thin source's ScanQuery does not return entry versions or expiry; those cannot be
+preserved in thin-source migrations. For a thick source and thin
+destination, the cache-data transferrer reads row metadata on source primaries
+and uses Ignite's internal thin-client `TcpClientCache.putAllConflict` path to retain
+versions and absolute expiry. That path requires conflict resolution on the destination
+servers. If source conflict versions are skipped, remaining TTL is applied per entry
+through the thin client's expiry policy. `--use-data-streamer` is rejected for a thin
+destination. Thin-source scans use public ScanQuery and do not expose the
+primary-by-partition scheduling used by the thick-source path.
+
+Only properties available in `ClientCacheConfiguration` can be copied to or from
+a thin endpoint. The SQL-created flag is not exposed and is not preserved. A custom
+cache transformer still receives a `CacheConfiguration` reconstructed from those
+available properties; custom affinity functions cannot be represented by the thin
+API and fall back to default rendezvous affinity. A
+`BiFunction` transformer receives `null` for the destination Ignite configuration
+when the destination is thin.
 
 ## DataStreamer
 
@@ -131,72 +181,72 @@ with retained metadata fails before it is submitted. Use `--skip-conflict-versio
 for expiring source data, `--skip-expire-time` to select this mode deliberately.
 All streamer buffers are flushed and acknowledged before successful completion.
 
-## Configuration and channels
+## Configuration and transferrers
 
-The stages run in dependency order: binary metadata, platform mappings,
-cache/SQL configuration, distributed settings, and cache records.
+For thick-to-thick migration, stages run in dependency order: binary metadata,
+platform mappings, cache/SQL configuration, distributed settings, and cache records.
 Metadata IDs, binary schemas, current QueryEntities, SQL-created flags and indexes
 are retained. Binary metadata and type mappings are cluster-wide and are copied even
 when only some caches are selected.
 
-Each transfer is an implementation of `AbstractMigrationChannel<FROM, TO, E>`: the origin
-types and the transferred entity type are declared per channel, and `from()`/`to()`
-return the raw origin connections. Channels and their entity types are grouped by
-category under `org.apache.ignite.util.migration.category`:
+Each endpoint implements `MigrationOrigin` and reports its category capabilities. Its
+`connect()` method returns the raw client connection; orchestration passes that connection
+to transferrer constructors. Transferrers and their entity types are grouped by category
+under `org.apache.ignite.util.migration.category`:
 
-| Package | Channels | Entities |
+| Package | Transferrers | Entities |
 |---|---|---|
-| `category.type` | `BinaryMetadataMigrationChannel`, `TypeMappingsMigrationChannel` | Binary metadata, platform type mappings (`MigrationTypeMapping`). |
-| `category.metastorage` | `MetastorageMigrationChannel` | Distributed settings and SQL view definitions. |
-| `category.cache` | `CacheConfigurationsMigrationChannel`, `CacheDataMigrationChannel` | Cache configurations (`MigrationCache`), cache records (`MigrationEntry`). |
+| `category.type` | `BinaryMetadataTransferrer`, `TypeMappingsTransferrer`, `ThinClientBinaryMetadataTransferrer`, `ThinClientTypeMappingsTransferrer` | Binary metadata, platform type mappings (`MigrationTypeMapping`). |
+| `category.metastorage` | `MetastorageTransferrer` | Distributed settings and SQL view definitions. |
+| `category.cache` | `CacheConfigurationsTransferrer`, `CacheDataTransferrer` | Cache configurations (`MigrationCache`), cache records (`MigrationEntry`). |
 
-The client-node endpoint `ThickClientMigrationEndpoint` lives in
-`org.apache.ignite.util.migration.endpoint`. It implements `MigrationOrigin<IgniteEx>`,
-whose `origin()` returns the raw in-JVM connection. `IgniteToIgniteMigration.prepareChannels`
-performs a one-time `instanceof IgniteEx` check on both origins (justifying an unchecked
-`MigrationOrigin<IgniteEx>` view) and validates that they resolve to different clusters
-before any transfer starts. This is the extension point for future origin types (for
-example a thin-client origin): channels that accept them are parameterized accordingly.
+`ThickClientMigrationEndpoint` and `ThinClientMigrationEndpoint` live in
+`org.apache.ignite.util.migration.endpoint` and implement `MigrationDestination`, which extends
+the common `MigrationOrigin` contract. Each endpoint provides a `LinkedHashMap` of supported
+categories to payload classes; the destination map order declares processing priority. Its
+`connect()` returns the raw connection. The destination also accepts individual category
+entities. Thick endpoints provide metadata, mappings, cache configuration, metastorage entries
+and cache entries. Thin endpoints provide locally available metadata and Java mappings, cache
+configuration, and cache entries.
+Different clusters are checked by cluster UUID for thick clients and overlapping server node IDs
+when a thin client is involved.
 
-`MigrationChannel<T>` defines the transfer contract. The abstract base shares the two
-origins, configuration, a shared executor, typed transformations and logging.
-`IgniteToIgniteMigration` owns the connections, builds an ordered `List<MigrationChannel<?>>`
-in `prepareChannels`, and calls `transfer()` on each channel in a loop. Disabled binary
-metadata and type mapping channels are omitted from the list. Channel selection is
-centralized here so additional endpoint-specific implementations can be selected as they
-are added.
+`CategoryTransferrer<T>` defines a category, payload type, and `transfer(destination, transformer)`
+operation. Every category uses this contract. Metadata and mapping transferrers read, transform,
+and send each item directly to `MigrationDestination.accept` on the transfer thread, without an
+intermediate collection; a `null` transformer result skips that item. No category provider is exposed as an `Iterable`. `IgniteToIgniteMigration`
+selects compatible categories and runs them in destination priority order. Category IDs are stable;
+add new enum values only with IDs greater than all existing values, and never reuse an ID.
 
-Every channel draws its worker threads from a single shared `ExecutorService` owned by
-`IgniteToIgniteMigration`. Its size is `max(migrationThreads, readThreads + writeThreads)`
-so the cache-data reader/writer workers always have enough threads even when
-`--migration-threads` is set low. Channels that parallelize a transfer submit tasks to this
-pool and wait for their own work to finish before returning, so the orchestrator shuts the
-pool down only after the last channel completes.
+Cache data migration owns separate reader and writer pools, each defaulting to one thread.
+They are closed by the transferrer after its work finishes; there is no shared migration-wide
+executor.
 
-Each channel reads and writes its own entities through the origins. The metastorage
-channel iterates the source distributed metastorage and writes keys to the destination.
+Each transferrer reads and writes its own entities through the origins. The metastorage
+transferrer scans source distributed metastorage through its callback API and writes keys to the destination.
 A default key filter skips entries that are not portable to the destination cluster:
 the cluster identity key, whose cluster ID destination nodes would adopt on startup,
 graceful-shutdown coordination, which holds source node ids, and SQL view definitions
 when the destination has no SQL schema. The filter can be disabled with
 `--ignore-default-filter`, which copies all of these entries unconditionally.
 
-Cache configuration and data channels share a `MigrationCachePlan` describing
+Cache configuration and data transferrers share a `MigrationCachePlan` describing
 selected cache definitions and name mappings. This helper prepares the selection once
-on first use and performs no destination writes. Channels consume the plan directly;
-they do not receive other channels or callbacks into them. Cache selection runs even
+on first use and performs no destination writes. Transferrers consume the plan directly;
+they do not receive other transferrers or callbacks into them. Cache selection runs even
 with `--no-cache-create`.
-The data channel owns the reader/writer queue, rate limits and worker cleanup.
+The cache-data transferrer owns the reader/writer queue, rate limits and worker cleanup.
 
 Cache definitions are detached copies. A transformer can change backups, affinity,
 data region or cache name. Returning `null` excludes the cache and its records.
-The cache configuration channel keeps source-to-destination names separately;
+The cache configuration transferrer keeps source-to-destination names separately;
 the destination recalculates key partitions. Group members must still have mutually
 compatible configurations.
 
 `Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>>` is compatible with
 the dump-reader transformer model. A `BiFunction` also receives the destination
-`IgniteConfiguration` (null for custom destinations). A public
+`IgniteConfiguration` (null for thin/custom destinations). In thin-source mode,
+the source configuration contains only the properties exposed by the thin API. A public
 `configure(Map<String, String>)` method receives the
 `--cache-config-transformer-parameters` map. Put custom classes and their
 dependencies on the utility's classpath.
@@ -218,18 +268,18 @@ IgniteToIgniteMigration.start(
 );
 ```
 
-The top-level configuration aggregates shared settings (`logger`, `migrationThreads`,
-channel-enable flags) and per-channel sub-configurations reached through
+The top-level configuration aggregates shared settings (`logger`, category transformers)
+and per-category sub-configurations reached through
 `cacheData()`, `cacheSelection()`, `cacheConfigurations()` and `metastorage()`. Each
-sub-config exposes only the settings its channel consumes.
+sub-config exposes only the settings its transferrer consumes.
 
-`transformer` configures a typed filter/transformer by channel class. It is applied by
-`CacheConfigurationsMigrationChannel` (item type `MigrationCache`) and
-`MetastorageMigrationChannel` (item type `Map.Entry<String, Serializable>`, sees all
-keys after the default and configured key filters). Returning null skips an item.
+`transformer` configures a typed filter/transformer by transferrer class. Binary metadata,
+type mappings, cache configurations, metastorage entries, and cache entries all support
+transformers. The metastorage transformer sees keys after the default and configured key
+filters. Returning `null` skips an item.
 
 ```java
-cfg.transformer(CacheConfigurationsMigrationChannel.class,
+cfg.transformer(CacheConfigurationsTransferrer.class,
     cache -> "excluded".equals(cache.sourceName()) ? null : cache);
 ```
 
@@ -262,8 +312,14 @@ or resume offset. Logs include stage/cache/partition information, partition dura
 and counts, and a record summary every minute. Buffered writer counts represent submissions;
 the final successful completion is emitted only after the destination acknowledges its buffers.
 
-WAL control is external. For a clean persistent destination, operators can disable WAL
-before migration and enable it and checkpoint afterward, as described in the ticket.
+WAL control is external. For a clean persistent destination, disable WAL before the
+migration and enable it and checkpoint afterward:
+
+```shell
+./control.sh --wal --disable
+# Run the migration.
+./control.sh --wal --enable && ./control.sh --checkpoint
+```
 
 ## Starting point for debugging
 

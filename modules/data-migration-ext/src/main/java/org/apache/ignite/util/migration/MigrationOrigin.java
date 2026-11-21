@@ -17,19 +17,20 @@
 
 package org.apache.ignite.util.migration;
 
+import java.util.LinkedHashMap;
 import org.apache.ignite.IgniteCheckedException;
 
-/**
- * A migration endpoint (source or destination).
- *
- * @param <T> Underlying connection type.
- */
-public interface MigrationOrigin<T> extends AutoCloseable {
-    /** @return Underlying connection. Available after {@link #connect()}. */
-    T origin();
+/** A migration endpoint (source or destination). */
+public interface MigrationOrigin extends AutoCloseable {
+    /** @return Categories available from this endpoint and their payload classes. */
+    LinkedHashMap<MigrationCategory, Class<?>> supportedCategories();
 
-    /** */
-    void connect() throws IgniteCheckedException;
+    /**
+     * Connects this endpoint and returns its source or destination connection.
+     *
+     * @return Connected source or destination connection.
+     */
+    Object connect() throws IgniteCheckedException;
 
     /** */
     @Override void close();
