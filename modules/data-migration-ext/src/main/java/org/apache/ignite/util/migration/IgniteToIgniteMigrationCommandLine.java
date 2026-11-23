@@ -247,19 +247,18 @@ public class IgniteToIgniteMigrationCommandLine {
 
         cfg.metastorage().ignoreDefaultFilter(options.containsKey("ignore-default-filter"));
 
-        cfg.cacheData()
-            .skipExpireTime(options.containsKey("skip-expire-time"))
-            .skipConflictVersion(options.containsKey("skip-conflict-version") || options.containsKey("skip-cdc-info"))
-            .batchSize(integer(options, "batch-size", CacheDataMigrationConfiguration.DFLT_BATCH_SIZE))
-            .readLimitInSec(integer(options, "read-limit-in-sec", 0))
-            .writeLimitInSec(integer(options, "write-limit-in-sec", 0))
-            .queueCapacity(integer(options, "queue-capacity", CacheDataMigrationConfiguration.DFLT_QUEUE_CAPACITY));
+        cfg.cacheData().setSkipExpireTime(options.containsKey("skip-expire-time"));
+        cfg.cacheData().setSkipConflictVersion(options.containsKey("skip-conflict-version") || options.containsKey("skip-cdc-info"));
+        cfg.cacheData().setBatchSize(integer(options, "batch-size", CacheDataMigrationConfiguration.DFLT_BATCH_SIZE));
+        cfg.cacheData().setReadLimitInSec(integer(options, "read-limit-in-sec", 0));
+        cfg.cacheData().setWriteLimitInSec(integer(options, "write-limit-in-sec", 0));
+        cfg.cacheData().setQueueCapacity(integer(options, "queue-capacity", CacheDataMigrationConfiguration.DFLT_QUEUE_CAPACITY));
 
         if (options.containsKey("read-threads"))
-            cfg.cacheData().readThreads(integer(options, "read-threads", 0));
+            cfg.cacheData().setReadThreads(integer(options, "read-threads", 0));
 
         if (options.containsKey("write-threads"))
-            cfg.cacheData().writeThreads(integer(options, "write-threads", 0));
+            cfg.cacheData().setWriteThreads(integer(options, "write-threads", 0));
 
         if (options.containsKey("cache-group-names"))
             cfg.cacheMigration().setCacheGroupNames(Arrays.asList(options.get("cache-group-names").split(",", -1)));
@@ -295,7 +294,8 @@ public class IgniteToIgniteMigrationCommandLine {
             }
         }
 
-        cfg.cacheData().useDataStreamer(true).dataStreamerConfiguration(streamer -> {
+        cfg.cacheData().setUseDataStreamer(true);
+        cfg.cacheData().setDataStreamerConfiguration(streamer -> {
             streamer.allowOverwrite(options.containsKey("allow-overwrite"));
 
             if (values.containsKey("per-node-buffer-size"))
@@ -528,33 +528,34 @@ public class IgniteToIgniteMigrationCommandLine {
         CacheDataMigrationConfiguration srcData = xml.getCacheData();
 
         if (!options.containsKey("skip-expire-time"))
-            target.cacheData().skipExpireTime(srcData.isSkipExpireTime());
+            target.cacheData().setSkipExpireTime(srcData.isSkipExpireTime());
 
         if (!options.containsKey("skip-conflict-version") && !options.containsKey("skip-cdc-info"))
-            target.cacheData().skipConflictVersion(srcData.isSkipConflictVersion());
+            target.cacheData().setSkipConflictVersion(srcData.isSkipConflictVersion());
 
         if (!options.containsKey("batch-size"))
-            target.cacheData().batchSize(srcData.getBatchSize());
+            target.cacheData().setBatchSize(srcData.getBatchSize());
 
         if (!options.containsKey("read-threads") && srcData.isReadThreadsConfigured())
-            target.cacheData().readThreads(srcData.getReadThreads());
+            target.cacheData().setReadThreads(srcData.getReadThreads());
 
         if (!options.containsKey("write-threads") && srcData.isWriteThreadsConfigured())
-            target.cacheData().writeThreads(srcData.getWriteThreads());
+            target.cacheData().setWriteThreads(srcData.getWriteThreads());
 
         if (!options.containsKey("read-limit-in-sec"))
-            target.cacheData().readLimitInSec(srcData.getReadLimitInSec());
+            target.cacheData().setReadLimitInSec(srcData.getReadLimitInSec());
 
         if (!options.containsKey("write-limit-in-sec"))
-            target.cacheData().writeLimitInSec(srcData.getWriteLimitInSec());
+            target.cacheData().setWriteLimitInSec(srcData.getWriteLimitInSec());
 
         if (!options.containsKey("queue-capacity"))
-            target.cacheData().queueCapacity(srcData.getQueueCapacity());
+            target.cacheData().setQueueCapacity(srcData.getQueueCapacity());
 
-        if (!options.containsKey("use-data-streamer"))
-            target.cacheData().useDataStreamer(srcData.isUseDataStreamer())
-                .dataStreamerConfiguration(srcData.dataStreamerConfiguration(),
-                    srcData.dataStreamerConfigurationDescription());
+        if (!options.containsKey("use-data-streamer")) {
+            target.cacheData().setUseDataStreamer(srcData.isUseDataStreamer());
+            target.cacheData().setDataStreamerConfiguration(srcData.getDataStreamerConfiguration(),
+                srcData.getDataStreamerConfigurationDescription());
+        }
     }
 
     /** */

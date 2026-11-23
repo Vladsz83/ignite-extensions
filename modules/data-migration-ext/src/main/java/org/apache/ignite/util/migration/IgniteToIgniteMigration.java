@@ -17,23 +17,22 @@
 
 package org.apache.ignite.util.migration;
 
-import java.util.Collection;
 import java.util.HashSet;
-import java.util.List;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.TimeUnit;
-import java.util.function.Supplier;
 import java.util.stream.Collectors;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.client.IgniteClient;
 import org.apache.ignite.cluster.ClusterNode;
 import org.apache.ignite.internal.IgniteEx;
+import org.apache.ignite.util.migration.category.cache.configuration.AbstractCacheConfigurationsTransferrer;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
 import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationsTransferrer;
 import org.apache.ignite.util.migration.category.cache.configuration.ThinClientCacheConfigurationsTransferrer;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
 import org.apache.ignite.util.migration.category.cache.data.CacheDataTransferrer;
 import org.apache.ignite.util.migration.category.metastorage.MetastorageTransferrer;
 import org.apache.ignite.util.migration.category.type.BinaryMetadataTransferrer;
@@ -84,7 +83,7 @@ public class IgniteToIgniteMigration {
                 ", skipConflictVersion=" + mCfg.cacheData().skipConflictVersion() +
                 ", useDataStreamer=" + mCfg.cacheData().useDataStreamer() +
                 ", dataStreamerSettings=" + (mCfg.cacheData().useDataStreamer() ?
-                    mCfg.cacheData().dataStreamerConfigurationDescription() : "disabled") +
+                    mCfg.cacheData().getDataStreamerConfigurationDescription() : "disabled") +
                 ", ignoreDefaultMetastorageFilter=" + mCfg.metastorage().ignoreDefaultFilter() +
                 ", metastorageFilters=" + mCfg.metastorage().filters().stream()
                     .map(filter -> filter.getClass().getName()).collect(Collectors.joining(",", "[", "]")) + "].");
@@ -141,10 +140,10 @@ public class IgniteToIgniteMigration {
         IgniteEx dest = (IgniteEx)destOrigin;
 
         // Cache selection and name mapping are needed even when cache creation is disabled.
-        MigrationTransformer<MigrationCache> cacheTransformer =
+        MigrationTransformer<CacheConfigurationMigration> cacheTransformer =
             mCfg.transformer(CacheConfigurationsTransferrer.class);
-        List<MigrationCache> caches = mCfg.cacheMigration().prepare(
-            () -> CacheConfigurationsTransferrer.sourceCaches(src), dest, true, cacheTransformer, log);
+        CacheConfigurationsTransferrer cacheTransferrer = new CacheConfigurationsTransferrer(src, mCfg.cacheMigration(), log);
+        List<CacheConfigurationMigration> caches = cacheTransferrer.prepareCaches(dest, true, cacheTransformer);
 
         for (MigrationCategory category : compatibleCategories.keySet()) {
             switch (category) {
@@ -165,13 +164,14 @@ public class IgniteToIgniteMigration {
                     break;
 
                 case CACHE_CONFIGURATION:
-                    run(new CacheConfigurationsTransferrer(src, dest, log, mCfg.cacheMigration(),
-                        caches), to, compatibleCategories, cacheTransformer);
+                    run(cacheTransferrer, to, compatibleCategories, cacheTransformer);
 
                     break;
 
                 case METASTORAGE_ENTRY:
-                    run(new MetastorageTransferrer(src, dest, log, mCfg.metastorage()), to, compatibleCategories,
+                    boolean hasSqlSchemas = dest.context().cache().cacheDescriptors().values().stream()
+                        .anyMatch(org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor::sql);
+                    run(new MetastorageTransferrer(src, hasSqlSchemas, log, mCfg.metastorage()), to, compatibleCategories,
                         mCfg.transformer(MetastorageTransferrer.class));
 
                     break;
@@ -207,16 +207,14 @@ public class IgniteToIgniteMigration {
             "views, dynamic cluster settings, SQL-created flags and data-structure state are not transferred. " +
             "Thin cache configuration is limited to ClientCacheConfiguration properties.");
 
-        MigrationTransformer<MigrationCache> cacheTransformer =
+        MigrationTransformer<CacheConfigurationMigration> cacheTransformer =
             mCfg.transformer(CacheConfigurationsTransferrer.class);
 
-        java.util.function.Supplier<java.util.Collection<MigrationCache>> sourceCaches =
-            (srcOrigin instanceof IgniteEx src) ?
-                () -> CacheConfigurationsTransferrer.sourceCaches(src) :
-                () -> ThinClientCacheConfigurationsTransferrer.sourceCaches((IgniteClient)srcOrigin);
+        AbstractCacheConfigurationsTransferrer<?> cacheTransferrer = srcOrigin instanceof IgniteEx src ?
+            new CacheConfigurationsTransferrer(src, mCfg.cacheMigration(), log) :
+            new ThinClientCacheConfigurationsTransferrer((IgniteClient)srcOrigin, mCfg.cacheMigration(), log);
         IgniteEx destEx = (destOrigin instanceof IgniteEx) ? (IgniteEx)destOrigin : null;
-        List<MigrationCache> caches = mCfg.cacheMigration().prepare(
-            sourceCaches, destEx, false, cacheTransformer, log);
+        List<CacheConfigurationMigration> caches = cacheTransferrer.prepareCaches(destEx, false, cacheTransformer);
 
         for (MigrationCategory category : compatibleCategories.keySet()) {
             switch (category) {
@@ -249,14 +247,7 @@ public class IgniteToIgniteMigration {
                     break;
 
                 case CACHE_CONFIGURATION:
-                    if (destOrigin instanceof IgniteClient client) {
-                        run(new ThinClientCacheConfigurationsTransferrer(srcOrigin, client,
-                            log, mCfg.cacheMigration(), caches), to, compatibleCategories, cacheTransformer);
-                    }
-                    else {
-                        run(new CacheConfigurationsTransferrer(srcOrigin, (IgniteEx)destOrigin,
-                            log, mCfg.cacheMigration(), caches), to, compatibleCategories, cacheTransformer);
-                    }
+                    run(cacheTransferrer, to, compatibleCategories, cacheTransformer);
 
                     break;
 

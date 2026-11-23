@@ -26,16 +26,16 @@ import static org.junit.Assert.assertTrue;
 
 /** Cache-data reader and writer workers always use separate, channel-owned pools. */
 public class CacheDataMigrationThreadPoolsTest {
-    /** Defaults create one reader and one writer thread in separate pools. */
+    /** Defaults create four reader and four writer threads in separate pools. */
     @Test public void testDefaultReaderAndWriterPools() {
         CacheDataMigrationThreadPools pools = new CacheDataMigrationThreadPools(new CacheDataMigrationConfiguration());
 
         try {
             assertNotSame(pools.readerPool(), pools.writerPool());
-            assertEquals(1, pools.readerThreads());
-            assertEquals(1, pools.writerThreads());
-            assertEquals(1, ((ThreadPoolExecutor)pools.readerPool()).getCorePoolSize());
-            assertEquals(1, ((ThreadPoolExecutor)pools.writerPool()).getCorePoolSize());
+            assertEquals(4, pools.readerThreads());
+            assertEquals(4, pools.writerThreads());
+            assertEquals(4, ((ThreadPoolExecutor)pools.readerPool()).getCorePoolSize());
+            assertEquals(4, ((ThreadPoolExecutor)pools.writerPool()).getCorePoolSize());
         }
         finally {
             pools.stop(true);

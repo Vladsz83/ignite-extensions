@@ -63,7 +63,7 @@ import org.apache.ignite.internal.util.typedef.T3;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
 import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
 import org.jetbrains.annotations.Nullable;
 
@@ -87,7 +87,7 @@ final class ThinClientCacheDataTransferrer {
     private final CacheDataMigrationConfiguration cfg;
 
     /** Cache selection and name mapping. */
-    private final List<MigrationCache> caches;
+    private final List<CacheConfigurationMigration> caches;
 
     /** Thick cache transferrer supplying the primary-partition scan implementation. */
     private final CacheDataTransferrer thickProvider;
@@ -148,7 +148,7 @@ final class ThinClientCacheDataTransferrer {
         MigrationDestination toEndpoint,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
-        List<MigrationCache> caches,
+        List<CacheConfigurationMigration> caches,
         CacheDataTransferrer thickProvider,
         boolean noBinaryMetadataCreate,
         boolean noMappingsCreate
@@ -169,10 +169,10 @@ final class ThinClientCacheDataTransferrer {
     }
 
     /** Transfers cache records using the public cache APIs of thick or thin clients. */
-    void transfer(@Nullable MigrationTransformer<MigrationEntry> transformer) {
+    void transfer(@Nullable MigrationTransformer<CacheEntryMigration> transformer) {
         Map<String, String> names = new LinkedHashMap<>(caches.size());
 
-        for (MigrationCache c : caches)
+        for (CacheConfigurationMigration c : caches)
             names.put(c.sourceName(), c.configuration().getName());
 
         Object src = from;
@@ -203,7 +203,7 @@ final class ThinClientCacheDataTransferrer {
                 pending.add(new ReadTask(part.getKey(), names.get(part.getKey()), part.getValue()));
         }
         else {
-            for (MigrationCache cache : caches)
+            for (CacheConfigurationMigration cache : caches)
                 pending.add(new ReadTask(cache.sourceName(), names.get(cache.sourceName()), null));
         }
 
@@ -262,7 +262,7 @@ final class ThinClientCacheDataTransferrer {
     /** Reads assigned caches into the bounded writer queue. */
     private Void read(
         ConcurrentLinkedQueue<ReadTask> pending,
-        @Nullable MigrationTransformer<MigrationEntry> transformer,
+        @Nullable MigrationTransformer<CacheEntryMigration> transformer,
         int totalTasks
     ) throws IgniteCheckedException, InterruptedException {
         try {
@@ -284,12 +284,12 @@ final class ThinClientCacheDataTransferrer {
 
     /** Scans one cache (or source partition) through the best available endpoint API. */
     private void readTask(ReadTask task,
-        @Nullable MigrationTransformer<MigrationEntry> transformer,
+        @Nullable MigrationTransformer<CacheEntryMigration> transformer,
         int totalTasks
     ) throws IgniteCheckedException, InterruptedException {
         long start = System.nanoTime();
         long cnt = 0;
-        List<MigrationEntry> batch = new ArrayList<>(cfg.batchSize());
+        List<CacheEntryMigration> batch = new ArrayList<>(cfg.batchSize());
         QueryCursor<?> cursor = task.partition == null ? sourceCursor(task.sourceCache) :
             thickProvider.readCursor((IgniteEx)from, task.sourceCache, task.partition);
 
@@ -305,15 +305,15 @@ final class ThinClientCacheDataTransferrer {
 
                 readLimiter.acquire(1);
 
-                MigrationEntry item;
+                CacheEntryMigration item;
 
-                if (rawEntry instanceof MigrationEntry entry)
+                if (rawEntry instanceof CacheEntryMigration entry)
                     item = entry;
                 else {
                     @SuppressWarnings("unchecked")
                     Cache.Entry<Object, Object> cacheEntry = (Cache.Entry<Object, Object>)rawEntry;
 
-                    item = new MigrationEntry(cacheEntry.getKey(), cacheEntry.getValue(), 0, null);
+                    item = new CacheEntryMigration(cacheEntry.getKey(), cacheEntry.getValue(), 0, null);
                 }
 
                 if (transformer != null)
@@ -355,7 +355,7 @@ final class ThinClientCacheDataTransferrer {
     }
 
     /** Registers binary metadata encountered in the current entry on the destination before writing it. */
-    private void registerBinaryMetadata(MigrationEntry entry) throws IgniteCheckedException {
+    private void registerBinaryMetadata(CacheEntryMigration entry) throws IgniteCheckedException {
         Set<Object> visited = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
 
         registerBinaryValue(entry.key(), visited);
@@ -514,13 +514,13 @@ final class ThinClientCacheDataTransferrer {
     }
 
     /** Writes a batch with APIs exposed by the destination endpoint. */
-    private void writeBatch(String name, List<MigrationEntry> entries) throws IgniteCheckedException {
+    private void writeBatch(String name, List<CacheEntryMigration> entries) throws IgniteCheckedException {
         Object dest = to;
 
         try {
             Map<Object, Object> values = new LinkedHashMap<>();
 
-            for (MigrationEntry entry : entries)
+            for (CacheEntryMigration entry : entries)
                 values.put(entry.key(), entry.value());
 
             if (dest instanceof IgniteClient client) {
@@ -547,7 +547,7 @@ final class ThinClientCacheDataTransferrer {
 
                     try {
                         res.skipStore(true);
-                        cfg.dataStreamerConfiguration().accept(res);
+                        cfg.getDataStreamerConfiguration().accept(res);
 
                         return res;
                     }
@@ -586,7 +586,7 @@ final class ThinClientCacheDataTransferrer {
     private void writeThinClientBatch(
         IgniteClient client,
         String name,
-        List<MigrationEntry> entries,
+        List<CacheEntryMigration> entries,
         Map<Object, Object> values
     ) throws IgniteCheckedException {
         ClientCache<Object, Object> cache = client.<Object, Object>cache(name).withKeepBinary();
@@ -599,7 +599,7 @@ final class ThinClientCacheDataTransferrer {
 
             Map<Object, T3<Object, GridCacheVersion, Long>> conflictBatch = new LinkedHashMap<>();
 
-            for (MigrationEntry entry : entries) {
+            for (CacheEntryMigration entry : entries) {
                 long expireTime = cfg.skipExpireTime() ? 0 : entry.expireTime();
 
                 if (expireTime > 0 && expireTime <= System.currentTimeMillis())
@@ -624,7 +624,7 @@ final class ThinClientCacheDataTransferrer {
 
         // When only source versions are skipped, public thin writes can still retain an absolute source expiry by
         // converting it to a remaining TTL immediately before the operation.
-        for (MigrationEntry entry : entries) {
+        for (CacheEntryMigration entry : entries) {
             long expireTime = entry.expireTime();
 
             if (expireTime > 0 && expireTime <= System.currentTimeMillis())
@@ -645,7 +645,8 @@ final class ThinClientCacheDataTransferrer {
                     streamer.close();
                 else
                     streamer.close(true);
-            } catch (Exception e) {
+            }
+            catch (Exception e) {
                 log.warning("Error while closing streamer [" + streamer + "]", e);
             }
         }
@@ -708,13 +709,13 @@ final class ThinClientCacheDataTransferrer {
         private final String cache;
 
         /** Entries. */
-        private final List<MigrationEntry> entries;
+        private final List<CacheEntryMigration> entries;
 
         /**
          * @param cache Destination cache.
          * @param entries Entries.
          */
-        private Batch(String cache, List<MigrationEntry> entries) {
+        private Batch(String cache, List<CacheEntryMigration> entries) {
             this.cache = cache;
             this.entries = entries;
         }

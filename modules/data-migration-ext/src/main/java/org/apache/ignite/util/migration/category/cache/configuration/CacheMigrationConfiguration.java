@@ -29,10 +29,10 @@ import java.util.function.Function;
 import java.util.function.Supplier;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
+import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.processors.cache.CacheType;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.configuration.CacheConfiguration;
 import org.jetbrains.annotations.Nullable;
 
 /** Caches migration configuration. */
@@ -147,17 +147,17 @@ public class CacheMigrationConfiguration {
      * @param log Logger.
      * @return Selected and transformed cache definitions.
      */
-    public List<MigrationCache> prepare(
-        Supplier<Collection<MigrationCache>> src,
+    public List<CacheConfigurationMigration> prepare(
+        Supplier<Collection<CacheConfigurationMigration>> src,
         @Nullable IgniteEx dest,
         boolean destSupportsDs,
-        MigrationTransformer<MigrationCache> transformer,
+        MigrationTransformer<CacheConfigurationMigration> transformer,
         IgniteLogger log
     ) {
-        List<MigrationCache> sel = new ArrayList<>();
+        List<CacheConfigurationMigration> sel = new ArrayList<>();
         Set<String> dstNames = new HashSet<>();
 
-        for (MigrationCache item : src.get()) {
+        for (CacheConfigurationMigration item : src.get()) {
             if (!includes(item.configuration())) {
                 if (log.isInfoEnabled()) {
                     log.info("Skipped cache [sourceName=" + item.sourceName() + ", reason='cache group filter'].");
@@ -177,7 +177,7 @@ public class CacheMigrationConfiguration {
             }
 
             String grpName = item.configuration().getGroupName();
-            MigrationCache cache = transformer.transform(item);
+            CacheConfigurationMigration cache = transformer.transform(item);
 
             if (cache == null) {
                 if (log.isInfoEnabled()) {
@@ -206,7 +206,8 @@ public class CacheMigrationConfiguration {
             if (cacheCfg.getName() == null || cacheCfg.getName().isEmpty() || !dstNames.add(cacheCfg.getName()))
                 throw new IgniteException("Invalid or duplicate transformed cache name: " + cacheCfg.getName() + '.');
 
-            sel.add(new MigrationCache(item.sourceName(), cacheCfg, cache.sql(), item.type()));
+            sel.add(new CacheConfigurationMigration(item.sourceName(), cacheCfg, cache.sql(), item.type(), noCacheCreate,
+                createCacheIfNotExists));
         }
 
         return Collections.unmodifiableList(sel);

@@ -28,7 +28,6 @@ import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.internal.IgniteEx;
-import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
@@ -42,9 +41,6 @@ import org.jetbrains.annotations.Nullable;
  * filters and a transformer can additionally skip or transform entries.
  */
 public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx, Map.Entry<String, Serializable>> {
-    /** Destination node. */
-    private final IgniteEx to;
-
     /** */
     private static final String VIEW_PREFIX = "ignite.internal.sql.view.";
 
@@ -58,26 +54,26 @@ public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx
     private final MetastorageMigrationConfiguration cfg;
 
     /** */
-    private Boolean hasSqlSchemas;
+    private final boolean hasSqlSchemas;
 
     /** Lazily computed; includes the SQL view prefix only when the destination has no SQL schema. */
     private MetastorageKeyFilterTransformer notPortableKeyFilter;
 
     /**
      * @param from Migration source.
-     * @param to Migration destination.
+     * @param hasSqlSchemas Whether the destination has an SQL schema.
      * @param log Logger.
      * @param cfg Metastorage transfer settings.
      */
     public MetastorageTransferrer(
         IgniteEx from,
-        IgniteEx to,
+        boolean hasSqlSchemas,
         IgniteLogger log,
         MetastorageMigrationConfiguration cfg
     ) {
         super(from, MigrationCategory.METASTORAGE_ENTRY, Map.Entry.class, log);
 
-        this.to = to;
+        this.hasSqlSchemas = hasSqlSchemas;
         this.cfg = cfg;
     }
 
@@ -117,17 +113,9 @@ public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx
                 return;
             }
 
-            try {
-                to.context().distributedMetastorage().write(candidate.getKey(), candidate.getValue());
+            dest.accept(MigrationCategory.METASTORAGE_ENTRY, candidate);
 
-                info("Transferred distributed metadata: " + candidate.getKey() + '.');
-            }
-            catch (IgniteCheckedException e) {
-                throw new IgniteException(
-                    "Failed to transfer distributed metastorage entry [name=" + candidate.getKey() + ", error=" + e.getMessage() + "].",
-                    e
-                );
-            }
+            info("Transferred distributed metadata: " + candidate.getKey() + '.');
         };
 
         try {
@@ -138,22 +126,13 @@ public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx
         }
     }
 
-    /** Whether any SQL schema exists on the destination (computed once). */
-    private boolean hasSqlSchemas() {
-        if (hasSqlSchemas == null)
-            hasSqlSchemas = to.context().cache().cacheDescriptors().values().stream()
-                .anyMatch(DynamicCacheDescriptor::sql);
-
-        return hasSqlSchemas;
-    }
-
     /**
      * Lazily builds the not-portable key filter. The SQL view prefix is included only when the
      * destination has no SQL schema, because views cannot be attached in that case.
      */
     private MetastorageKeyFilterTransformer notPortableKeyFilter() {
         if (notPortableKeyFilter == null) {
-            List<String> prefixes = hasSqlSchemas()
+            List<String> prefixes = hasSqlSchemas
                 ? Collections.emptyList()
                 : Collections.singletonList(VIEW_PREFIX);
 

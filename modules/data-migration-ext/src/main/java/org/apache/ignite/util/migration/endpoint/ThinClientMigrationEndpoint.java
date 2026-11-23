@@ -21,14 +21,18 @@ import java.util.LinkedHashMap;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.Ignition;
+import org.apache.ignite.cache.CacheExistsException;
+import org.apache.ignite.cache.affinity.rendezvous.RendezvousAffinityFunction;
+import org.apache.ignite.client.ClientCacheConfiguration;
 import org.apache.ignite.client.IgniteClient;
 import org.apache.ignite.configuration.ClientConfiguration;
 import org.apache.ignite.internal.binary.BinaryMetadata;
 import org.apache.ignite.internal.client.thin.ClientBinary;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
-import org.apache.ignite.util.migration.category.cache.data.MigrationEntry;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
+import org.apache.ignite.util.migration.category.cache.configuration.ThinClientCacheConfigurationsTransferrer;
+import org.apache.ignite.util.migration.category.cache.data.CacheEntryMigration;
 import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
 
 import static org.apache.ignite.internal.MarshallerPlatformIds.JAVA_ID;
@@ -69,14 +73,14 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
 
         categories.put(MigrationCategory.BINARY_METADATA, BinaryMetadata.class);
         categories.put(MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class);
-        categories.put(MigrationCategory.CACHE_CONFIGURATION, MigrationCache.class);
-        categories.put(MigrationCategory.CACHE_ENTRY, MigrationEntry.class);
+        categories.put(MigrationCategory.CACHE_CONFIGURATION, CacheConfigurationMigration.class);
+        categories.put(MigrationCategory.CACHE_ENTRY, CacheEntryMigration.class);
 
         return categories;
     }
 
     /** {@inheritDoc} */
-    @Override public void accept(MigrationCategory category, Object data) {
+    @Override public void accept(MigrationCategory category, Object entity) {
         if (client == null)
             throw new IgniteException("Migration destination is not connected.");
 
@@ -86,10 +90,10 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
             throw new IgniteException("Thin client does not expose its binary metadata handler.");
 
         if (category == MigrationCategory.BINARY_METADATA) {
-            if (!(data instanceof BinaryMetadata))
+            if (!(entity instanceof BinaryMetadata))
                 throw new IgniteException("Expected BinaryMetadata for migration category: " + category);
 
-            BinaryMetadata metadata = (BinaryMetadata)data;
+            BinaryMetadata metadata = (BinaryMetadata)entity;
 
             ((ClientBinary)binary).binaryContext().updateMetadata(metadata.typeId(), metadata, false);
 
@@ -97,10 +101,10 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
         }
 
         if (category == MigrationCategory.TYPE_MAPPING) {
-            if (!(data instanceof MigrationTypeMapping))
+            if (!(entity instanceof MigrationTypeMapping))
                 throw new IgniteException("Expected MigrationTypeMapping for migration category: " + category);
 
-            MigrationTypeMapping mapping = (MigrationTypeMapping)data;
+            MigrationTypeMapping mapping = (MigrationTypeMapping)entity;
 
             if (mapping.platformId() != JAVA_ID) {
                 IgniteLogger log = cfg.getLogger();
@@ -118,7 +122,61 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
             return;
         }
 
+        if (category == MigrationCategory.CACHE_CONFIGURATION) {
+            if (!(entity instanceof CacheConfigurationMigration))
+                throw new IgniteException("Expected CacheConfigurationMigration for migration category: " + category);
+
+            acceptCacheConfiguration((CacheConfigurationMigration)entity);
+
+            return;
+        }
+
         throw new IgniteException("Destination does not accept migration category: " + category);
+    }
+
+    /** Creates a cache through the thin-client API using the policy carried in the entity. */
+    private void acceptCacheConfiguration(CacheConfigurationMigration cache) {
+        if (client == null)
+            throw new IgniteException("Migration destination is not connected.");
+
+        String name = cache.configuration().getName();
+        boolean exists = client.cacheNames().contains(name);
+
+        if (cache.noCacheCreate()) {
+            if (!exists)
+                throw new IgniteException("Destination cache does not exist [cache=" + name + "].");
+
+            return;
+        }
+
+        if (exists && !cache.createCacheIfNotExists())
+            throw new CacheExistsException("Destination cache already exists [cache=" + name + "].");
+
+        if (exists)
+            return;
+
+        if (cache.configuration().getAffinity() != null &&
+            !(cache.configuration().getAffinity() instanceof RendezvousAffinityFunction)) {
+            IgniteLogger log = cfg.getLogger();
+
+            if (log != null)
+                log.warning("Thin destination cannot represent the cache's custom affinity; using default rendezvous " +
+                    "affinity [cache=" + name + "].");
+        }
+
+        ClientCacheConfiguration clientCfg = ThinClientCacheConfigurationsTransferrer
+            .toClientCacheConfiguration(cache.configuration());
+
+        try {
+            if (cache.createCacheIfNotExists())
+                client.getOrCreateCache(clientCfg);
+            else
+                client.createCache(clientCfg);
+        }
+        catch (RuntimeException e) {
+            throw new IgniteException("Failed to create destination cache through the thin client [cache=" + name +
+                "].", e);
+        }
     }
 
     /** {@inheritDoc} */

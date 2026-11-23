@@ -107,7 +107,7 @@ public class MigrationCategoryCompatibilityTest {
         }
 
         /** {@inheritDoc} */
-        @Override public void accept(MigrationCategory category, Object data) {
+        @Override public void accept(MigrationCategory category, Object entity) {
             // No transfer required in this test.
         }
 

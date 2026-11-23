@@ -22,7 +22,7 @@ import java.util.Objects;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersion;
 
 /** Value and metadata read from the same stored row. Keys and values remain binary. */
-public class MigrationEntry implements Serializable {
+public class CacheEntryMigration implements Serializable {
     /** */
     private static final long serialVersionUID = 0L;
 
@@ -44,7 +44,7 @@ public class MigrationEntry implements Serializable {
      * @param expireTime Expiration timestamp, or zero for an eternal entry.
      * @param ver Source version.
      */
-    public MigrationEntry(Object key, Object val, long expireTime, GridCacheVersion ver) {
+    public CacheEntryMigration(Object key, Object val, long expireTime, GridCacheVersion ver) {
         this.key = Objects.requireNonNull(key, "key");
         this.val = Objects.requireNonNull(val, "value");
         this.expireTime = expireTime;

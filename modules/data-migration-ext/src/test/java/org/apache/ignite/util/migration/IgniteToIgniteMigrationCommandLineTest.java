@@ -103,8 +103,8 @@ public class IgniteToIgniteMigrationCommandLineTest {
 
         assertTrue(cfg.metastorage().ignoreDefaultFilter());
         assertEquals(256, cfg.cacheData().batchSize());
-        assertEquals(1, cfg.cacheData().readThreads());
-        assertEquals(1, cfg.cacheData().writeThreads());
+        assertEquals(4, cfg.cacheData().readThreads());
+        assertEquals(4, cfg.cacheData().writeThreads());
         assertFalse(cfg.cacheData().isReadThreadsConfigured());
         assertFalse(cfg.cacheData().isWriteThreadsConfigured());
         assertEquals(CacheDataMigrationConfiguration.DFLT_QUEUE_CAPACITY, cfg.cacheData().queueCapacity());
@@ -128,26 +128,26 @@ public class IgniteToIgniteMigrationCommandLineTest {
         assertEquals(3, explicit.cacheData().readThreads());
     }
 
-    /** Reader and writer counts have independent single-thread defaults and explicit overrides. */
+    /** Reader and writer counts have independent defaults and explicit overrides. */
     @Test
     public void testCacheWorkerThreadDefaultsAndOverrides() {
         CacheDataMigrationConfiguration cfg = new CacheDataMigrationConfiguration();
 
-        assertEquals(1, cfg.readThreads());
-        assertEquals(1, cfg.writeThreads());
+        assertEquals(4, cfg.readThreads());
+        assertEquals(4, cfg.writeThreads());
         assertFalse(cfg.isReadThreadsConfigured());
         assertFalse(cfg.isWriteThreadsConfigured());
 
         cfg.readThreads(3);
 
         assertEquals(3, cfg.readThreads());
-        assertEquals(1, cfg.writeThreads());
+        assertEquals(4, cfg.writeThreads());
         assertTrue(cfg.isReadThreadsConfigured());
         assertFalse(cfg.isWriteThreadsConfigured());
 
         cfg = new CacheDataMigrationConfiguration().writeThreads(2);
 
-        assertEquals(1, cfg.readThreads());
+        assertEquals(4, cfg.readThreads());
         assertEquals(2, cfg.writeThreads());
         assertFalse(cfg.isReadThreadsConfigured());
         assertTrue(cfg.isWriteThreadsConfigured());

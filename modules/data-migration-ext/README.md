@@ -116,8 +116,8 @@ the cache's configured access-expiration behavior.
 | `--no-mappings-create` | false | Skip explicit type mapping registration. |
 | `--ignore-default-filter` | false | Also copy distributed metastorage entries that are not portable to the destination cluster (cluster identity, graceful-shutdown, and SQL views even when the destination has no SQL schema). |
 | `--batch-size N` | 256 | Maximum entries in a write batch. |
-| `--read-threads N` | 1 | Number of cache-data reader threads in its dedicated pool. |
-| `--write-threads N` | 1 | Number of cache-data writer threads in its dedicated pool. |
+| `--read-threads N` | 4 | Number of cache-data reader threads in its dedicated pool. |
+| `--write-threads N` | 4 | Number of cache-data writer threads in its dedicated pool. |
 | `--queue-capacity N` | 64 | Maximum queued batches; a full queue blocks readers. |
 | `--read-limit-in-sec N` | 0 | Global read rate in entries/second; zero is unlimited. |
 | `--write-limit-in-sec N` | 0 | Global write submission rate; zero is unlimited. |
@@ -198,7 +198,7 @@ under `org.apache.ignite.util.migration.category`:
 |---|---|---|
 | `category.type` | `BinaryMetadataTransferrer`, `TypeMappingsTransferrer`, `ThinClientBinaryMetadataTransferrer`, `ThinClientTypeMappingsTransferrer` | Binary metadata, platform type mappings (`MigrationTypeMapping`). |
 | `category.metastorage` | `MetastorageTransferrer` | Distributed settings and SQL view definitions. |
-| `category.cache` | `CacheConfigurationsTransferrer`, `CacheDataTransferrer` | Cache configurations (`MigrationCache`), cache records (`MigrationEntry`). |
+| `category.cache` | `CacheConfigurationsTransferrer`, `CacheDataTransferrer` | Cache configurations (`CacheConfigurationMigration`), cache records (`CacheEntryMigration`). |
 
 `ThickClientMigrationEndpoint` and `ThinClientMigrationEndpoint` live in
 `org.apache.ignite.util.migration.endpoint` and implement `MigrationDestination`, which extends
@@ -218,7 +218,7 @@ intermediate collection; a `null` transformer result skips that item. No categor
 selects compatible categories and runs them in destination priority order. Category IDs are stable;
 add new enum values only with IDs greater than all existing values, and never reuse an ID.
 
-Cache data migration owns separate reader and writer pools, each defaulting to one thread.
+Cache data migration owns separate reader and writer pools, each defaulting to four threads.
 They are closed by the transferrer after its work finishes; there is no shared migration-wide
 executor.
 

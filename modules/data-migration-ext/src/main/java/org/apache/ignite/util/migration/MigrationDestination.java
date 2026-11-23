@@ -19,12 +19,11 @@ package org.apache.ignite.util.migration;
 
 /** Destination side of a migration. Receiver operations are associated with {@link MigrationCategory}. */
 public interface MigrationDestination extends MigrationOrigin {
-
     /**
      * Accepts one transferred entity.
      *
      * @param category Data category.
-     * @param data Entity to accept.
+     * @param entity Entity to accept.
      */
-    void accept(MigrationCategory category, Object data);
+    void accept(MigrationCategory category, Object entity);
 }

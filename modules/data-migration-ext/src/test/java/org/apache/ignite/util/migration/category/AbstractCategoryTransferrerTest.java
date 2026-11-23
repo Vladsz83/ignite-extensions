@@ -22,7 +22,6 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
-import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.logger.java.JavaLogger;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
@@ -104,9 +103,9 @@ public class AbstractCategoryTransferrerTest {
         }
 
         /** {@inheritDoc} */
-        @Override public void accept(MigrationCategory category, Object data) {
+        @Override public void accept(MigrationCategory category, Object entity) {
             writeThread.set(Thread.currentThread());
-            accepted.add((String)data);
+            accepted.add((String)entity);
         }
 
         /** {@inheritDoc} */

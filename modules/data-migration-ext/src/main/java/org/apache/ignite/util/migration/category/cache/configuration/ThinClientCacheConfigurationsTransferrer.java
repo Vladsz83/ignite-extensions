@@ -18,126 +18,149 @@
 package org.apache.ignite.util.migration.category.cache.configuration;
 
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
-import org.apache.ignite.IgniteException;
+import javax.cache.configuration.Factory;
+import javax.cache.expiry.ExpiryPolicy;
 import org.apache.ignite.IgniteLogger;
-import org.apache.ignite.cache.CacheExistsException;
+import org.apache.ignite.cache.QueryEntity;
 import org.apache.ignite.cache.affinity.rendezvous.RendezvousAffinityFunction;
+import org.apache.ignite.client.ClientAffinityConfiguration;
 import org.apache.ignite.client.ClientCache;
 import org.apache.ignite.client.ClientCacheConfiguration;
 import org.apache.ignite.client.IgniteClient;
+import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.processors.cache.CacheType;
-import org.apache.ignite.util.migration.MigrationCategory;
-import org.apache.ignite.util.migration.MigrationDestination;
-import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 
-/** Transfers cache configurations to a thin-client destination. */
-public class ThinClientCacheConfigurationsTransferrer extends AbstractCategoryTransferrer<Object, MigrationCache> {
-    /** Connected thin-client destination. */
-    private final IgniteClient dest;
-
-    /** */
-    private final CacheMigrationConfiguration cfg;
-
-    /** */
-    private final List<MigrationCache> caches;
-
+/** Transfers cache configurations read from a thin-client source. */
+public class ThinClientCacheConfigurationsTransferrer extends AbstractCacheConfigurationsTransferrer<IgniteClient> {
     /**
-     * @param from Connected source (thick or thin).
-     * @param dest Connected thin-client destination.
+     * @param src Connected thin-client source.
+     * @param cfg Cache migration settings.
      * @param log Logger.
-     * @param cfg Caches migration configuration.
-     * @param caches Selected and transformed cache definitions.
      */
-    public ThinClientCacheConfigurationsTransferrer(
-        Object from,
-        IgniteClient dest,
-        IgniteLogger log,
-        CacheMigrationConfiguration cfg,
-        List<MigrationCache> caches
-    ) {
-        super(from, MigrationCategory.CACHE_CONFIGURATION, MigrationCache.class, log);
-
-        this.dest = dest;
-        this.cfg = cfg;
-        this.caches = caches;
+    public ThinClientCacheConfigurationsTransferrer(IgniteClient src, CacheMigrationConfiguration cfg, IgniteLogger log) {
+        super(src, cfg, log);
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(MigrationDestination destEndpoint, MigrationTransformer<MigrationCache> transformer) {
-        if (caches.isEmpty()) {
-            info("No caches selected for cache configuration migration.");
+    @Override protected List<CacheConfigurationMigration> sourceCaches() {
+        List<CacheConfigurationMigration> res = new ArrayList<>();
 
-            return;
+        for (String name : src.cacheNames()) {
+            ClientCache<Object, Object> cache = src.<Object, Object>cache(name);
+            ClientCacheConfiguration clientCfg = cache.getConfiguration();
+            CacheConfiguration<?, ?> cacheCfg = toCacheConfiguration(clientCfg);
+
+            res.add(new CacheConfigurationMigration(name, cacheCfg, false, CacheType.USER));
         }
 
-        warn("Thin destination supports only ClientCacheConfiguration properties; unsupported source cache " +
-            "properties will use destination defaults.");
+        res.sort(Comparator.comparing(CacheConfigurationMigration::sourceName));
 
-        for (MigrationCache cache : caches) {
-            if (cache.configuration().getAffinity() != null &&
-                !(cache.configuration().getAffinity() instanceof RendezvousAffinityFunction)) {
-                warn("Thin destination cannot represent the cache's custom affinity; using default rendezvous affinity " +
-                    "[cache=" + cache.configuration().getName() + "].");
-            }
-
-            String action = createOrValidateThinCache(cache);
-
-            info("Cache " + action + " [sourceName=" + cache.sourceName() + ", destinationName=" +
-                cache.configuration().getName() + ", sql=" + cache.sql() + ", configuration=" +
-                cache.configuration() + "].");
-        }
+        return res;
     }
 
-    /** */
-    private String createOrValidateThinCache(MigrationCache cache) {
-        String name = cache.configuration().getName();
-        boolean exists = dest.cacheNames().contains(name);
+    /** Converts a thin-client configuration to a detached full configuration. */
+    private static CacheConfiguration<?, ?> toCacheConfiguration(ClientCacheConfiguration cfg) {
+        CacheConfiguration<Object, Object> res = new CacheConfiguration<>();
 
-        if (cfg.noCacheCreate()) {
-            if (!exists)
-                throw new IgniteException("Destination cache does not exist [cache=" + name + "].");
+        res.setName(cfg.getName());
+        res.setAtomicityMode(cfg.getAtomicityMode());
+        res.setBackups(cfg.getBackups());
+        res.setCacheMode(cfg.getCacheMode());
+        res.setGroupName(cfg.getGroupName());
+        res.setEagerTtl(cfg.isEagerTtl());
+        res.setPartitionLossPolicy(cfg.getPartitionLossPolicy());
+        res.setReadFromBackup(cfg.isReadFromBackup());
+        res.setWriteSynchronizationMode(cfg.getWriteSynchronizationMode());
+        res.setCopyOnRead(cfg.isCopyOnRead());
+        res.setDataRegionName(cfg.getDataRegionName());
+        res.setStatisticsEnabled(cfg.isStatisticsEnabled());
+        res.setSqlEscapeAll(cfg.isSqlEscapeAll());
+        res.setSqlIndexMaxInlineSize(cfg.getSqlIndexMaxInlineSize());
+        res.setSqlSchema(cfg.getSqlSchema());
+        QueryEntity[] entities = copyQueryEntities(cfg.getQueryEntities());
 
-            return "creation skipped; using existing [reason='no cache create']";
+        res.setQueryEntities(entities == null ? null : Arrays.asList(entities));
+
+        if (cfg.getKeyConfiguration() != null)
+            res.setKeyConfiguration(cfg.getKeyConfiguration().clone());
+
+        if (cfg.getExpiryPolicy() != null) {
+            ExpiryPolicy expiry = cfg.getExpiryPolicy();
+
+            res.setExpiryPolicyFactory((Factory<ExpiryPolicy>)() -> expiry);
         }
 
-        if (exists && !cfg.createCacheIfNotExists())
-            throw new CacheExistsException("Destination cache already exists [cache=" + name + "].");
+        ClientAffinityConfiguration aff = cfg.getAffinityConfiguration();
 
-        if (exists)
-            return "creation skipped; using existing [reason='already exists']";
+        if (aff != null && aff.getPartitions() > 0)
+            res.setAffinity(new RendezvousAffinityFunction(aff.isExcludeNeighbors(), aff.getPartitions()));
 
-        ClientCacheConfiguration clientCfg = ThinClientCacheConfigurationAdapter
-            .toClientCacheConfiguration(cache.configuration());
-
-        if (cfg.createCacheIfNotExists())
-            dest.getOrCreateCache(clientCfg);
-        else
-            dest.createCache(clientCfg);
-
-        return "created";
+        return res;
     }
 
     /**
-     * Reads cache configuration through the thin-client API. Thin clients do not expose cache type,
-     * SQL-created state, data-structure caches, or the full server-side cache configuration.
+     * Converts a cache configuration to the subset supported by thin-client cache creation.
+     *
+     * @param cfg Full cache configuration.
+     * @return Thin-client cache configuration.
      */
-    public static List<MigrationCache> sourceCaches(IgniteClient client) {
-        List<MigrationCache> res = new ArrayList<>();
+    public static ClientCacheConfiguration toClientCacheConfiguration(CacheConfiguration<?, ?> cfg) {
+        ClientCacheConfiguration res = new ClientCacheConfiguration()
+            .setName(cfg.getName())
+            .setAtomicityMode(cfg.getAtomicityMode())
+            .setBackups(cfg.getBackups())
+            .setCacheMode(cfg.getCacheMode())
+            .setGroupName(cfg.getGroupName())
+            .setEagerTtl(cfg.isEagerTtl())
+            .setPartitionLossPolicy(cfg.getPartitionLossPolicy())
+            .setReadFromBackup(cfg.isReadFromBackup())
+            .setWriteSynchronizationMode(cfg.getWriteSynchronizationMode())
+            .setCopyOnRead(cfg.isCopyOnRead())
+            .setStatisticsEnabled(cfg.isStatisticsEnabled())
+            .setSqlEscapeAll(cfg.isSqlEscapeAll())
+            .setSqlIndexMaxInlineSize(cfg.getSqlIndexMaxInlineSize())
+            .setSqlSchema(cfg.getSqlSchema())
+            .setQueryEntities(copyQueryEntities(cfg.getQueryEntities()));
 
-        for (String name : client.cacheNames()) {
-            ClientCache<Object, Object> cache = client.<Object, Object>cache(name);
-            ClientCacheConfiguration clientCfg = cache.getConfiguration();
-            org.apache.ignite.configuration.CacheConfiguration<?, ?> cacheCfg =
-                ThinClientCacheConfigurationAdapter.toCacheConfiguration(clientCfg);
+        if (cfg.getDataRegionName() != null)
+            res.setDataRegionName(cfg.getDataRegionName());
 
-            res.add(new MigrationCache(name, cacheCfg, false, CacheType.USER));
+        if (cfg.getKeyConfiguration() != null)
+            res.setKeyConfiguration(cfg.getKeyConfiguration().clone());
+
+        Factory<ExpiryPolicy> expiryFactory = cfg.getExpiryPolicyFactory();
+
+        if (expiryFactory != null)
+            res.setExpiryPolicy(expiryFactory.create());
+
+        if (cfg.getAffinity() instanceof RendezvousAffinityFunction aff) {
+            res.setAffinityConfiguration(new ClientAffinityConfiguration()
+                .setPartitions(aff.getPartitions())
+                .setExcludeNeighbors(aff.isExcludeNeighbors()));
         }
 
-        res.sort(Comparator.comparing(MigrationCache::sourceName));
-
         return res;
+    }
+
+    /** Makes detached copies of query entities. */
+    private static QueryEntity[] copyQueryEntities(QueryEntity[] entities) {
+        return entities == null ? null : copyQueryEntities(Arrays.asList(entities));
+    }
+
+    /** Makes detached copies of full cache configuration query entities. */
+    private static QueryEntity[] copyQueryEntities(Collection<QueryEntity> entities) {
+        if (entities == null)
+            return null;
+
+        List<QueryEntity> res = new ArrayList<>(entities.size());
+
+        for (QueryEntity entity : entities)
+            res.add(new QueryEntity(entity));
+
+        return res.toArray(new QueryEntity[0]);
     }
 }

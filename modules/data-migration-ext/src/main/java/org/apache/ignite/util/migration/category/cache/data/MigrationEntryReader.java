@@ -33,7 +33,7 @@ import org.apache.ignite.resources.IgniteInstanceResource;
  * this metadata. A second local row lookup avoids combining a scanned value with metadata from a later update.
  * Requires this extension on source servers or peer class loading.
  */
-public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, Object>, MigrationEntry> {
+public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, Object>, CacheEntryMigration> {
     /** */
     private static final long serialVersionUID = 0L;
 
@@ -50,7 +50,7 @@ public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, O
     }
 
     /** {@inheritDoc} */
-    @Override public MigrationEntry apply(Cache.Entry<Object, Object> entry) {
+    @Override public CacheEntryMigration apply(Cache.Entry<Object, Object> entry) {
         GridCacheContext<Object, Object> ctx = ((IgniteEx)ignite).cachex(cacheName).context();
 
         ctx.shared().database().checkpointReadLock();
@@ -61,7 +61,7 @@ public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, O
             if (row == null || row.expireTime() > 0 && row.expireTime() <= System.currentTimeMillis())
                 return null;
 
-            return new MigrationEntry(
+            return new CacheEntryMigration(
                 CacheObjectUtils.unwrapBinaryIfNeeded(ctx.cacheObjectContext(), row.key(), true, false),
                 CacheObjectUtils.unwrapBinaryIfNeeded(ctx.cacheObjectContext(), row.value(), true, false),
                 row.expireTime(), row.version());

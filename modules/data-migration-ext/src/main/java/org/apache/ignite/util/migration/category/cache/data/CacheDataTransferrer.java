@@ -75,13 +75,13 @@ import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
 import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
 
 import static org.apache.ignite.internal.processors.cache.query.GridCacheQueryType.SCAN;
 import static org.apache.ignite.plugin.security.SecurityPermission.CACHE_READ;
 
 /** Transfers cache records through partition readers and a bounded queue of write batches. */
-public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, MigrationEntry> {
+public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, CacheEntryMigration> {
     /** Destination connection. */
     private final Object to;
 
@@ -89,7 +89,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     private final CacheDataMigrationConfiguration cfg;
 
     /** */
-    private final List<MigrationCache> caches;
+    private final List<CacheConfigurationMigration> caches;
 
     /** Source cache name to destination cache name. */
     private final Map<String, String> cacheNameMap;
@@ -101,7 +101,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     private final BlockingQueue<Batch> batches;
 
     /** */
-    private final Set<QueryCursor<MigrationEntry>> cursors = ConcurrentHashMap.newKeySet();
+    private final Set<QueryCursor<CacheEntryMigration>> cursors = ConcurrentHashMap.newKeySet();
 
     /** */
     private final Map<String, IgniteDataStreamer<Object, Object>> streamers = new ConcurrentHashMap<>();
@@ -151,7 +151,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         Object to,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
-        List<MigrationCache> caches
+        List<CacheConfigurationMigration> caches
     ) {
         this(from, to, log, cfg, caches, false, false);
     }
@@ -170,11 +170,11 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         Object to,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
-        List<MigrationCache> caches,
+        List<CacheConfigurationMigration> caches,
         boolean noBinaryMetadataCreate,
         boolean noMappingsCreate
     ) {
-        super(from, MigrationCategory.CACHE_ENTRY, MigrationEntry.class, log);
+        super(from, MigrationCategory.CACHE_ENTRY, CacheEntryMigration.class, log);
 
         this.to = to;
         this.cfg = cfg;
@@ -182,7 +182,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
 
         Map<String, String> nameMap = new LinkedHashMap<>(caches.size());
 
-        for (MigrationCache c : caches)
+        for (CacheConfigurationMigration c : caches)
             nameMap.put(c.sourceName(), c.configuration().getName());
 
         this.cacheNameMap = Collections.unmodifiableMap(nameMap);
@@ -195,7 +195,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<MigrationEntry> transformer) {
+    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<CacheEntryMigration> transformer) {
         Object src = this.src;
         Object destOrigin = to;
 
@@ -319,7 +319,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     }
 
     /** */
-    private Void read(MigrationTransformer<MigrationEntry> transformer) throws InterruptedException {
+    private Void read(MigrationTransformer<CacheEntryMigration> transformer) throws InterruptedException {
         try {
             Map.Entry<String, Integer> task;
 
@@ -340,23 +340,23 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     /** */
     private void readPartition(
         Map.Entry<String, Integer> task,
-        MigrationTransformer<MigrationEntry> transformer
+        MigrationTransformer<CacheEntryMigration> transformer
     ) throws InterruptedException {
         long start = System.nanoTime();
         long cnt = 0;
-        List<MigrationEntry> batch = new ArrayList<>(cfg.batchSize());
+        List<CacheEntryMigration> batch = new ArrayList<>(cfg.batchSize());
         String cache = task.getKey();
         int part = task.getValue();
         String destCache = cacheNameMap.get(cache);
 
         info("Reading partition [cache=" + cache + ", partition=" + part + "].");
 
-        QueryCursor<MigrationEntry> cursor = readCursor(srcIg, cache, part);
+        QueryCursor<CacheEntryMigration> cursor = readCursor(srcIg, cache, part);
 
         cursors.add(cursor);
 
         try (cursor) {
-            for (MigrationEntry item : cursor) {
+            for (CacheEntryMigration item : cursor) {
                 if (Thread.currentThread().isInterrupted())
                     throw new InterruptedException();
 
@@ -443,7 +443,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
 
     /** */
     @SuppressWarnings("unchecked")
-    QueryCursor<MigrationEntry> readCursor(IgniteEx ig, String cache, int part) {
+    QueryCursor<CacheEntryMigration> readCursor(IgniteEx ig, String cache, int part) {
         openCache(ig, cache);
 
         GridCacheContext<Object, Object> ctx = ig.cachex(cache).context();
@@ -459,16 +459,15 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
                     throw new IgniteException("Source partition is lost [partition=" + part + "].");
 
                 ClusterNode primary = ig.affinity(cache).mapPartitionToNode(part);
-                CacheQuery<MigrationEntry> qry = ctx.queries().createScanQuery(null,
-                    new MigrationEntryReader(cache), part, true, false, null,
-                    Collections.emptySet());
+                CacheQuery<CacheEntryMigration> qry = ctx.queries().createScanQuery(null,
+                    new MigrationEntryReader(cache), part, true, false, Collections.emptySet());
 
                 qry.pageSize(pageSize);
 
                 // Public partition ScanQuery can select a backup. Route the same scan engine to the primary explicitly.
                 return ctx.kernalContext().query().executeQuery(SCAN, cache, ctx,
-                    new IgniteOutClosureX<GridCloseableIterator<MigrationEntry>>() {
-                        @Override public GridCloseableIterator<MigrationEntry> applyx() throws IgniteCheckedException {
+                    new IgniteOutClosureX<GridCloseableIterator<CacheEntryMigration>>() {
+                        @Override public GridCloseableIterator<CacheEntryMigration> applyx() throws IgniteCheckedException {
                             return ctx.queries().scanQueryDistributed(qry, Collections.singleton(primary));
                         }
                     }, true);
@@ -485,7 +484,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     // --- Destination-side helpers ---
 
     /** */
-    private void writeBatch(IgniteEx ig, String name, List<MigrationEntry> entries) {
+    private void writeBatch(IgniteEx ig, String name, List<CacheEntryMigration> entries) {
         IgniteCache<Object, Object> cache = openPublicCache(ig, name).withKeepBinary().withSkipStore();
         IgniteInternalCache<Object, Object> internal = ig.cachex(name).keepBinary().withSkipStore();
         GridCacheContext<Object, Object> ctx = internal.context();
@@ -503,7 +502,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
 
                 try {
                     res.skipStore(true);
-                    cfg.dataStreamerConfiguration().accept(res);
+                    cfg.getDataStreamerConfiguration().accept(res);
 
                     return res;
                 }
@@ -514,7 +513,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
                 }
             });
 
-            for (MigrationEntry entry : entries)
+            for (CacheEntryMigration entry : entries)
                 streamer.addData(destinationKey(entry.key()), destinationValue(ctx, entry));
 
             return;
@@ -529,7 +528,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         if (keepVer || !cfg.skipExpireTime() && entries.stream().anyMatch(e -> e.expireTime() != 0)) {
             Map<KeyCacheObject, GridCacheDrInfo> batch = new LinkedHashMap<>();
 
-            for (MigrationEntry entry : entries) {
+            for (CacheEntryMigration entry : entries) {
                 long expire = cfg.skipExpireTime() ? 0 : entry.expireTime();
 
                 if (expire > 0 && expire <= System.currentTimeMillis())
@@ -565,7 +564,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         else {
             Map<Object, Object> batch = new LinkedHashMap<>();
 
-            for (MigrationEntry entry : entries)
+            for (CacheEntryMigration entry : entries)
                 batch.put(destinationKey(entry.key()), destinationValue(ctx, entry));
 
             if (!cfg.skipExpireTime())
@@ -587,7 +586,7 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
     }
 
     /** */
-    private static Object destinationValue(GridCacheContext<?, ?> ctx, MigrationEntry entry) {
+    private static Object destinationValue(GridCacheContext<?, ?> ctx, CacheEntryMigration entry) {
         return ctx.dataStructuresCache() ? dataStructureValue(ctx, entry.value()) : entry.value();
     }
 
@@ -658,10 +657,10 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Mi
         private final String cache;
 
         /** */
-        private final List<MigrationEntry> entries;
+        private final List<CacheEntryMigration> entries;
 
         /** */
-        Batch(String cache, List<MigrationEntry> entries) {
+        Batch(String cache, List<CacheEntryMigration> entries) {
             this.cache = cache;
             this.entries = entries;
         }

@@ -30,10 +30,10 @@ public class CacheDataMigrationConfiguration {
     public static final int DFLT_QUEUE_CAPACITY = 64;
 
     /** Default cache-data reader worker count. */
-    public static final int DFLT_READ_THREADS = 1;
+    public static final int DFLT_READ_THREADS = 4;
 
     /** Default cache-data writer worker count. */
-    public static final int DFLT_WRITE_THREADS = 1;
+    public static final int DFLT_WRITE_THREADS = 4;
 
     /** */
     private int batchSize = DFLT_BATCH_SIZE;
@@ -63,7 +63,7 @@ public class CacheDataMigrationConfiguration {
     private boolean skipExpireTime;
 
     /** */
-    private boolean skipConflictVersion;
+    private boolean skipConflictVer;
 
     /** */
     private boolean useDataStreamer;
@@ -92,21 +92,6 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Maximum entries per batch. */
-    public int batchSize() {
-        return batchSize;
-    }
-
-    /**
-     * @param val Maximum number of entries per batch.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration batchSize(int val) {
-        batchSize = val;
-
-        return this;
-    }
-
-    /** @return Maximum entries per batch. */
     public int getBatchSize() {
         return batchSize;
     }
@@ -114,23 +99,6 @@ public class CacheDataMigrationConfiguration {
     /** @param val Maximum entries per batch. */
     public void setBatchSize(int val) {
         batchSize = val;
-    }
-
-    /** @return Reader worker count. */
-    public int readThreads() {
-        return readThreads;
-    }
-
-    /**
-     * @param val Positive number of reader threads.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration readThreads(int val) {
-        positive(val, "read-threads");
-        readThreads = val;
-        readThreadsConfigured = true;
-
-        return this;
     }
 
     /** @return Reader worker count. */
@@ -146,23 +114,6 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Writer worker count. */
-    public int writeThreads() {
-        return writeThreads;
-    }
-
-    /**
-     * @param val Positive number of writer threads.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration writeThreads(int val) {
-        positive(val, "write-threads");
-        writeThreads = val;
-        writeThreadsConfigured = true;
-
-        return this;
-    }
-
-    /** @return Writer worker count. */
     public int getWriteThreads() {
         return writeThreads;
     }
@@ -172,21 +123,6 @@ public class CacheDataMigrationConfiguration {
         positive(val, "write-threads");
         writeThreads = val;
         writeThreadsConfigured = true;
-    }
-
-    /** @return Maximum queued batches. */
-    public int queueCapacity() {
-        return queueCapacity;
-    }
-
-    /**
-     * @param val Maximum number of queued batches.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration queueCapacity(int val) {
-        queueCapacity = val;
-
-        return this;
     }
 
     /** @return Maximum queued batches. */
@@ -210,21 +146,6 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Global read entries per second, or zero. */
-    public int readLimitInSec() {
-        return readLimit;
-    }
-
-    /**
-     * @param val Global read rate in entries per second, or zero for unlimited.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration readLimitInSec(int val) {
-        readLimit = val;
-
-        return this;
-    }
-
-    /** @return Global read entries per second, or zero. */
     public int getReadLimitInSec() {
         return readLimit;
     }
@@ -232,21 +153,6 @@ public class CacheDataMigrationConfiguration {
     /** @param val Global read rate in entries per second, or zero for unlimited. */
     public void setReadLimitInSec(int val) {
         readLimit = val;
-    }
-
-    /** @return Global write entries per second, or zero. */
-    public int writeLimitInSec() {
-        return writeLimit;
-    }
-
-    /**
-     * @param val Global write rate in entries per second, or zero for unlimited.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration writeLimitInSec(int val) {
-        writeLimit = val;
-
-        return this;
     }
 
     /** @return Global write entries per second, or zero. */
@@ -260,21 +166,6 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Whether source expiry is ignored. */
-    public boolean skipExpireTime() {
-        return skipExpireTime;
-    }
-
-    /**
-     * @param val Whether source expiration timestamps are ignored.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration skipExpireTime(boolean val) {
-        skipExpireTime = val;
-
-        return this;
-    }
-
-    /** @return Whether source expiry is ignored. */
     public boolean isSkipExpireTime() {
         return skipExpireTime;
     }
@@ -285,43 +176,13 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Whether source conflict versions are ignored. */
-    public boolean skipConflictVersion() {
-        return skipConflictVersion;
-    }
-
-    /**
-     * @param val Whether source conflict versions are ignored.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration skipConflictVersion(boolean val) {
-        skipConflictVersion = val;
-
-        return this;
-    }
-
-    /** @return Whether source conflict versions are ignored. */
     public boolean isSkipConflictVersion() {
-        return skipConflictVersion;
+        return skipConflictVer;
     }
 
     /** @param val Whether source conflict versions are ignored. */
     public void setSkipConflictVersion(boolean val) {
-        skipConflictVersion = val;
-    }
-
-    /** @return Whether to load data using a data streamer. */
-    public boolean useDataStreamer() {
-        return useDataStreamer;
-    }
-
-    /**
-     * @param val Whether to load data using a data streamer.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration useDataStreamer(boolean val) {
-        useDataStreamer = val;
-
-        return this;
+        skipConflictVer = val;
     }
 
     /** @return Whether to load data using a data streamer. */
@@ -335,35 +196,22 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Data streamer configuration callback. */
-    public Consumer<IgniteDataStreamer<Object, Object>> dataStreamerConfiguration() {
+    public Consumer<IgniteDataStreamer<Object, Object>> getDataStreamerConfiguration() {
         return streamerCfg;
     }
 
+    /** */
+    public void setDataStreamerConfiguration(Consumer<IgniteDataStreamer<Object, Object>> cfg) {
+        streamerCfg = Objects.requireNonNull(cfg);
+    }
+
     /** @return Human-readable DataStreamer configuration description. */
-    public String dataStreamerConfigurationDescription() {
+    public String getDataStreamerConfigurationDescription() {
         return streamerCfgDescription;
     }
 
-    /**
-     * @param cfg Data streamer configuration callback, invoked once per cache before adding data.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration dataStreamerConfiguration(Consumer<IgniteDataStreamer<Object, Object>> cfg) {
-        return dataStreamerConfiguration(cfg, "custom callback");
-    }
-
-    /**
-     * @param cfg Data streamer configuration callback, invoked once per cache before adding data.
-     * @param description Human-readable description for startup logging.
-     * @return {@code this} for chaining.
-     */
-    public CacheDataMigrationConfiguration dataStreamerConfiguration(
-        Consumer<IgniteDataStreamer<Object, Object>> cfg,
-        String description
-    ) {
-        streamerCfg = Objects.requireNonNull(cfg);
-        streamerCfgDescription = Objects.requireNonNull(description);
-
-        return this;
+    /** */
+    public void setDataStreamerConfigurationDescription(String streamerCfgDescription) {
+        this.streamerCfgDescription = streamerCfgDescription;
     }
 }

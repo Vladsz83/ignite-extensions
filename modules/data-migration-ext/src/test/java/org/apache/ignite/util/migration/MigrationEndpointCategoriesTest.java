@@ -23,8 +23,8 @@ import java.util.LinkedHashMap;
 import org.apache.ignite.configuration.ClientConfiguration;
 import org.apache.ignite.configuration.IgniteConfiguration;
 import org.apache.ignite.internal.binary.BinaryMetadata;
-import org.apache.ignite.util.migration.category.cache.configuration.MigrationCache;
-import org.apache.ignite.util.migration.category.cache.data.MigrationEntry;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
+import org.apache.ignite.util.migration.category.cache.data.CacheEntryMigration;
 import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
 import org.apache.ignite.util.migration.endpoint.ThickClientMigrationEndpoint;
 import org.apache.ignite.util.migration.endpoint.ThinClientMigrationEndpoint;
@@ -48,9 +48,9 @@ public class MigrationEndpointCategoriesTest {
             new ArrayList<>(categories.keySet()));
         assertEquals(BinaryMetadata.class, categories.get(MigrationCategory.BINARY_METADATA));
         assertEquals(MigrationTypeMapping.class, categories.get(MigrationCategory.TYPE_MAPPING));
-        assertEquals(MigrationCache.class, categories.get(MigrationCategory.CACHE_CONFIGURATION));
+        assertEquals(CacheConfigurationMigration.class, categories.get(MigrationCategory.CACHE_CONFIGURATION));
         assertEquals(java.util.Map.Entry.class, categories.get(MigrationCategory.METASTORAGE_ENTRY));
-        assertEquals(MigrationEntry.class, categories.get(MigrationCategory.CACHE_ENTRY));
+        assertEquals(CacheEntryMigration.class, categories.get(MigrationCategory.CACHE_ENTRY));
         assertEquals(src.supportedCategories(), dest.supportedCategories());
     }
 
@@ -67,8 +67,8 @@ public class MigrationEndpointCategoriesTest {
             new ArrayList<>(categories.keySet()));
         assertEquals(BinaryMetadata.class, categories.get(MigrationCategory.BINARY_METADATA));
         assertEquals(MigrationTypeMapping.class, categories.get(MigrationCategory.TYPE_MAPPING));
-        assertEquals(MigrationCache.class, categories.get(MigrationCategory.CACHE_CONFIGURATION));
-        assertEquals(MigrationEntry.class, categories.get(MigrationCategory.CACHE_ENTRY));
+        assertEquals(CacheConfigurationMigration.class, categories.get(MigrationCategory.CACHE_CONFIGURATION));
+        assertEquals(CacheEntryMigration.class, categories.get(MigrationCategory.CACHE_ENTRY));
         assertEquals(src.supportedCategories(), dest.supportedCategories());
     }
 }
