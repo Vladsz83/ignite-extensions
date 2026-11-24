@@ -18,7 +18,6 @@
 package org.apache.ignite.util.migration.endpoint;
 
 import java.io.Serializable;
-import java.util.LinkedHashMap;
 import java.util.Map;
 import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
@@ -29,12 +28,11 @@ import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.binary.BinaryMetadata;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
-import org.apache.ignite.util.migration.category.cache.data.CacheEntryMigration;
-import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigrationEntity;
+import org.apache.ignite.util.migration.category.type.TypeMappingMigrationEntity;
 
 /** Thick client (in-JVM) migration endpoint. */
-public class ThickClientMigrationEndpoint implements MigrationDestination {
+public class ThickClientMigrationEndpoint implements MigrationDestination<IgniteEx> {
     /** */
     private final IgniteConfiguration cfg;
 
@@ -61,20 +59,6 @@ public class ThickClientMigrationEndpoint implements MigrationDestination {
     }
 
     /** {@inheritDoc} */
-    /** {@inheritDoc} */
-    @Override public LinkedHashMap<MigrationCategory, Class<?>> supportedCategories() {
-        LinkedHashMap<MigrationCategory, Class<?>> categories = new LinkedHashMap<>();
-
-        categories.put(MigrationCategory.BINARY_METADATA, BinaryMetadata.class);
-        categories.put(MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class);
-        categories.put(MigrationCategory.CACHE_CONFIGURATION, CacheConfigurationMigration.class);
-        categories.put(MigrationCategory.METASTORAGE_ENTRY, Map.Entry.class);
-        categories.put(MigrationCategory.CACHE_ENTRY, CacheEntryMigration.class);
-
-        return categories;
-    }
-
-    /** {@inheritDoc} */
     @Override public void accept(MigrationCategory category, Object entity) {
         if (ig == null)
             throw new IgniteException("Migration destination is not connected.");
@@ -91,10 +75,10 @@ public class ThickClientMigrationEndpoint implements MigrationDestination {
                 return;
 
             case TYPE_MAPPING:
-                if (!(entity instanceof MigrationTypeMapping))
+                if (!(entity instanceof TypeMappingMigrationEntity))
                     throw new IgniteException("Expected MigrationTypeMapping for migration category: " + category);
 
-                MigrationTypeMapping mapping = (MigrationTypeMapping)entity;
+                TypeMappingMigrationEntity mapping = (TypeMappingMigrationEntity)entity;
 
                 ig.context().cacheObjects().binaryContext().registerUserClassName(
                     mapping.typeId(), mapping.typeName(), false, false, mapping.platformId());
@@ -102,10 +86,10 @@ public class ThickClientMigrationEndpoint implements MigrationDestination {
                 return;
 
             case CACHE_CONFIGURATION:
-                if (!(entity instanceof CacheConfigurationMigration))
+                if (!(entity instanceof CacheConfigurationMigrationEntity))
                     throw new IgniteException("Expected CacheConfigurationMigration for migration category: " + category);
 
-                acceptCacheConfiguration((CacheConfigurationMigration)entity);
+                acceptCacheConfiguration((CacheConfigurationMigrationEntity)entity);
 
                 return;
 
@@ -132,26 +116,12 @@ public class ThickClientMigrationEndpoint implements MigrationDestination {
         }
     }
 
-    /** Creates or validates a cache definition using the policy carried by the migration entity. */
-    private void acceptCacheConfiguration(CacheConfigurationMigration cache) {
+    /** Creates a cache on the destination. */
+    private void acceptCacheConfiguration(CacheConfigurationMigrationEntity cache) {
         if (ig == null)
             throw new IgniteException("Migration destination is not connected.");
 
         String name = cache.configuration().getName();
-
-        if (cache.noCacheCreate()) {
-            if (ig.context().cache().cacheDescriptor(name) == null)
-                throw new IgniteException("Destination cache does not exist [cache=" + name + "].");
-
-            try {
-                ig.context().cache().getOrStartCache(name);
-            }
-            catch (IgniteCheckedException e) {
-                throw new IgniteException("Failed to open migration cache [cache=" + name + "].", e);
-            }
-
-            return;
-        }
 
         try {
             boolean created = ig.context().cache().dynamicStartCache(cache.configuration(), name, null,
@@ -159,10 +129,20 @@ public class ThickClientMigrationEndpoint implements MigrationDestination {
 
             if (!created && !cache.createCacheIfNotExists())
                 throw new CacheExistsException("Destination cache already exists [cache=" + name + "].");
+
+            // dynamicStartCache only registers a client reference for an existing cache and does not
+            // start it; the data transfer phase requires a running cache.
+            if (!created)
+                ig.context().cache().getOrStartCache(name);
         }
         catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to create destination cache [cache=" + name + "].", e);
+            throw new IgniteException("Failed to prepare destination cache [cache=" + name + "].", e);
         }
+    }
+
+    /** {@inheritDoc} */
+    @Override public IgniteEx origin() {
+        return ig;
     }
 
     /** {@inheritDoc} */

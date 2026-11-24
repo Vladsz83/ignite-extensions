@@ -19,13 +19,17 @@ package org.apache.ignite.util.migration;
 
 import org.jetbrains.annotations.Nullable;
 
-/** Transfers source entities of one category to a migration destination. */
-public interface CategoryTransferrer<T> {
+/**
+ * Transfers source entities of one category to a migration destination.
+ *
+ * @param <ENTITY> Type of a single item transferred.
+ */
+public interface CategoryTransferrer<ENTITY> {
     /** @return Category of entities transferred by this implementation. */
     MigrationCategory category();
 
     /** @return Runtime class of the transferred entities. */
-    Class<?> dataClass();
+    Class<? super ENTITY> dataClass();
 
     /**
      * Transfers category data to the destination.
@@ -33,6 +37,5 @@ public interface CategoryTransferrer<T> {
      * @param dest Destination endpoint.
      * @param transformer Optional item transformer; returning {@code null} skips an item.
      */
-    void transfer(MigrationDestination dest, @Nullable MigrationTransformer<T> transformer);
-
+    void transfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<ENTITY> transformer);
 }

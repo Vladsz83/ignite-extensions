@@ -46,18 +46,18 @@ public class ThinClientCacheConfigurationsTransferrer extends AbstractCacheConfi
     }
 
     /** {@inheritDoc} */
-    @Override protected List<CacheConfigurationMigration> sourceCaches() {
-        List<CacheConfigurationMigration> res = new ArrayList<>();
+    @Override protected List<CacheConfigurationMigrationEntity> sourceCaches() {
+        List<CacheConfigurationMigrationEntity> res = new ArrayList<>();
 
         for (String name : src.cacheNames()) {
-            ClientCache<Object, Object> cache = src.<Object, Object>cache(name);
+            ClientCache<Object, Object> cache = src.cache(name);
             ClientCacheConfiguration clientCfg = cache.getConfiguration();
             CacheConfiguration<?, ?> cacheCfg = toCacheConfiguration(clientCfg);
 
-            res.add(new CacheConfigurationMigration(name, cacheCfg, false, CacheType.USER));
+            res.add(new CacheConfigurationMigrationEntity(name, cacheCfg, false, CacheType.USER, false));
         }
 
-        res.sort(Comparator.comparing(CacheConfigurationMigration::sourceName));
+        res.sort(Comparator.comparing(CacheConfigurationMigrationEntity::sourceName));
 
         return res;
     }

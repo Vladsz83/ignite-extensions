@@ -26,7 +26,6 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.BiFunction;
 import java.util.function.Function;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.IgniteSystemProperties;
@@ -48,14 +47,14 @@ import static org.apache.ignite.internal.IgniteVersionUtils.COPYRIGHT;
 import static org.apache.ignite.internal.IgniteVersionUtils.VER;
 import static org.apache.ignite.startup.cmdline.CommandLineStartup.isHelp;
 
-/** Command-line entry point. Uses Ignite launchers, Spring connection configuration and Ignite logging. */
+/** Command-line entry point. */
 public class IgniteToIgniteMigrationCommandLine {
     /** Whether startup banner output is suppressed. */
     private static final boolean QUIET = IgniteSystemProperties.getBoolean(IgniteSystemProperties.IGNITE_QUIET);
 
     /** Boolean switches. */
     private static final Set<String> FLAGS = new HashSet<>(Arrays.asList(
-        "no-cache-create", "create-cache-if-not-exists", "no-binary-metadata-create", "no-binary-metdata-create",
+        "create-cache-if-not-exists", "no-binary-metadata-create", "no-binary-metdata-create",
         "no-mappings-create", "skip-expire-time", "skip-conflict-version", "skip-cdc-info", "use-data-streamer",
         "allow-overwrite", "ignore-default-filter"));
 
@@ -241,11 +240,10 @@ public class IgniteToIgniteMigrationCommandLine {
 
         CacheMigrationConfiguration mCfg = cfg.cacheMigration();
 
-        mCfg.setNoCacheCreate(options.containsKey("no-cache-create"));
         mCfg.setCreateCacheIfNotExists(options.containsKey("create-cache-if-not-exists"));
         mCfg.setMoveDataStructures(bool(options, "move-data-structures", true));
 
-        cfg.metastorage().ignoreDefaultFilter(options.containsKey("ignore-default-filter"));
+        cfg.metastorage().setIgnoreDefaultFilter(options.containsKey("ignore-default-filter"));
 
         cfg.cacheData().setSkipExpireTime(options.containsKey("skip-expire-time"));
         cfg.cacheData().setSkipConflictVersion(options.containsKey("skip-conflict-version") || options.containsKey("skip-cdc-info"));
@@ -312,19 +310,7 @@ public class IgniteToIgniteMigrationCommandLine {
 
             if (values.containsKey("auto-flush-frequency"))
                 streamer.autoFlushFrequency(values.get("auto-flush-frequency"));
-        }, "allowOverwrite=" + options.containsKey("allow-overwrite") +
-            ", perNodeBufferSize=" + streamerSetting(values, "per-node-buffer-size") +
-            ", perNodeParallelOperations=" + streamerSetting(values, "per-node-parallel-operations") +
-            ", perThreadBufferSize=" + streamerSetting(values, "per-thread-buffer-size") +
-            ", timeout=" + streamerSetting(values, "timeout") +
-            ", autoFlushFrequency=" + streamerSetting(values, "auto-flush-frequency"));
-    }
-
-    /** Describes a DataStreamer setting, including when Ignite's default is used. */
-    private static String streamerSetting(Map<String, Integer> values, String name) {
-        Integer val = values.get(name);
-
-        return val == null ? "Ignite default" : val.toString();
+        });
     }
 
     /** */
@@ -456,20 +442,12 @@ public class IgniteToIgniteMigrationCommandLine {
             }
         }
 
-        if (transformer instanceof BiFunction) {
-            @SuppressWarnings("unchecked")
-            BiFunction<IgniteEx, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> fn =
-                (BiFunction<IgniteEx, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>>)transformer;
-
-            cfg.cacheMigration().setCacheConfigurationBiTransformer(fn);
-        }
-        else if (transformer instanceof Function) {
+        if (transformer instanceof Function) {
             cfg.cacheMigration().setCacheConfigurationTransformer(
                 (Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>>)transformer);
         }
-        else {
+        else
             throw new IllegalArgumentException("Cache transformer must implement Function or BiFunction.");
-        }
 
         if (cfg.logger().isInfoEnabled())
             cfg.logger().info("Configured cache configuration transformer [class=" + transformer.getClass().getName() +
@@ -501,9 +479,6 @@ public class IgniteToIgniteMigrationCommandLine {
 
         CacheMigrationConfiguration srcSel = xml.getCacheMigration();
 
-        if (!options.containsKey("no-cache-create"))
-            target.cacheMigration().setNoCacheCreate(srcSel.noCacheCreate());
-
         if (!options.containsKey("create-cache-if-not-exists"))
             target.cacheMigration().setCreateCacheIfNotExists(srcSel.createCacheIfNotExists());
 
@@ -513,48 +488,43 @@ public class IgniteToIgniteMigrationCommandLine {
         if (!options.containsKey("cache-group-names"))
             target.cacheMigration().setCacheGroupNames(new ArrayList<>(srcSel.cacheGroupNames()));
 
-        if (!options.containsKey("cache-config-transformer")) {
+        if (!options.containsKey("cache-config-transformer"))
             target.cacheMigration().setCacheConfigurationTransformer(srcSel.cacheConfigurationTransformer());
 
-            if (srcSel.cacheConfigurationBiTransformer() != null)
-                target.cacheMigration().setCacheConfigurationBiTransformer(srcSel.cacheConfigurationBiTransformer());
-        }
-
         if (!options.containsKey("ignore-default-filter"))
-            target.metastorage().ignoreDefaultFilter(xml.getMetastorage().isIgnoreDefaultFilter());
+            target.metastorage().setIgnoreDefaultFilter(xml.getMetastorage().isIgnoreDefaultFilter());
 
-        target.metastorage().setFilters(xml.getMetastorage().getFilters());
+        target.metastorage().setFilters(new ArrayList<>(xml.getMetastorage().filters()));
 
         CacheDataMigrationConfiguration srcData = xml.getCacheData();
 
         if (!options.containsKey("skip-expire-time"))
-            target.cacheData().setSkipExpireTime(srcData.isSkipExpireTime());
+            target.cacheData().setSkipExpireTime(srcData.skipExpireTime());
 
         if (!options.containsKey("skip-conflict-version") && !options.containsKey("skip-cdc-info"))
-            target.cacheData().setSkipConflictVersion(srcData.isSkipConflictVersion());
+            target.cacheData().setSkipConflictVersion(srcData.skipConflictVersion());
 
         if (!options.containsKey("batch-size"))
-            target.cacheData().setBatchSize(srcData.getBatchSize());
+            target.cacheData().setBatchSize(srcData.batchSize());
 
-        if (!options.containsKey("read-threads") && srcData.isReadThreadsConfigured())
-            target.cacheData().setReadThreads(srcData.getReadThreads());
+        if (!options.containsKey("read-threads"))
+            target.cacheData().setReadThreads(srcData.readThreads());
 
-        if (!options.containsKey("write-threads") && srcData.isWriteThreadsConfigured())
-            target.cacheData().setWriteThreads(srcData.getWriteThreads());
+        if (!options.containsKey("write-threads"))
+            target.cacheData().setWriteThreads(srcData.writeThreads());
 
         if (!options.containsKey("read-limit-in-sec"))
-            target.cacheData().setReadLimitInSec(srcData.getReadLimitInSec());
+            target.cacheData().setReadLimitInSec(srcData.readLimitInSec());
 
         if (!options.containsKey("write-limit-in-sec"))
-            target.cacheData().setWriteLimitInSec(srcData.getWriteLimitInSec());
+            target.cacheData().setWriteLimitInSec(srcData.writeLimitInSec());
 
         if (!options.containsKey("queue-capacity"))
-            target.cacheData().setQueueCapacity(srcData.getQueueCapacity());
+            target.cacheData().setQueueCapacity(srcData.queueCapacity());
 
         if (!options.containsKey("use-data-streamer")) {
-            target.cacheData().setUseDataStreamer(srcData.isUseDataStreamer());
-            target.cacheData().setDataStreamerConfiguration(srcData.getDataStreamerConfiguration(),
-                srcData.getDataStreamerConfigurationDescription());
+            target.cacheData().setUseDataStreamer(srcData.useDataStreamer());
+            target.cacheData().setDataStreamerConfiguration(srcData.dataStreamerConfiguration());
         }
     }
 
@@ -567,7 +537,7 @@ public class IgniteToIgniteMigrationCommandLine {
             "Options: --config migration.xml (Spring XML with IgniteToIgniteMigrationConfiguration bean)",
             "         --cache-group-names group1,group2 --batch-size N --read-threads N --write-threads N",
             "         --read-limit-in-sec N --write-limit-in-sec N --queue-capacity N",
-            "         --no-cache-create | --create-cache-if-not-exists",
+            "         --create-cache-if-not-exists",
             "         --no-binary-metadata-create --no-mappings-create --skip-expire-time",
             "         --skip-conflict-version (alias: --skip-cdc-info)",
             "         --ignore-default-filter",

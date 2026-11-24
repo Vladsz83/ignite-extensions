@@ -20,16 +20,11 @@ package org.apache.ignite.util.migration.category.cache.configuration;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
-import org.apache.ignite.IgniteCheckedException;
-import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
-import org.apache.ignite.cache.QueryEntity;
 import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.IgniteEx;
 import org.apache.ignite.internal.processors.cache.CacheType;
 import org.apache.ignite.internal.processors.cache.DynamicCacheDescriptor;
-import org.apache.ignite.internal.processors.query.QueryEntityEx;
-import org.apache.ignite.internal.util.typedef.internal.U;
 
 /** Transfers cache configurations to a thick-client destination. */
 public class CacheConfigurationsTransferrer extends AbstractCacheConfigurationsTransferrer<IgniteEx> {
@@ -43,8 +38,8 @@ public class CacheConfigurationsTransferrer extends AbstractCacheConfigurationsT
     }
 
     /** {@inheritDoc} */
-    @Override protected List<CacheConfigurationMigration> sourceCaches() {
-        List<CacheConfigurationMigration> res = new ArrayList<>();
+    @Override protected List<CacheConfigurationMigrationEntity> sourceCaches() {
+        List<CacheConfigurationMigrationEntity> res = new ArrayList<>();
 
         for (DynamicCacheDescriptor desc : src.context().cache().cacheDescriptors().values()) {
             if (desc.cacheType() != CacheType.USER && desc.cacheType() != CacheType.DATA_STRUCTURES)
@@ -55,28 +50,10 @@ public class CacheConfigurationsTransferrer extends AbstractCacheConfigurationsT
             cacheCfg.clearQueryEntities();
             cacheCfg.setQueryEntities(desc.schema().entities());
 
-            try {
-                cacheCfg = U.unmarshal(src.context(), U.marshal(src.context(), cacheCfg),
-                    CacheConfigurationsTransferrer.class.getClassLoader());
-            }
-            catch (IgniteCheckedException e) {
-                throw new IgniteException("Failed to copy cache configuration [cache=" + cacheCfg.getName() + "].", e);
-            }
-
-            for (QueryEntity entity : cacheCfg.getQueryEntities()) {
-                if (entity instanceof QueryEntityEx ex) {
-                    if (Integer.valueOf(-1).equals(ex.getPrimaryKeyInlineSize()))
-                        ex.setPrimaryKeyInlineSize(null);
-
-                    if (Integer.valueOf(-1).equals(ex.getAffinityKeyInlineSize()))
-                        ex.setAffinityKeyInlineSize(null);
-                }
-            }
-
-            res.add(new CacheConfigurationMigration(cacheCfg.getName(), cacheCfg, desc.sql(), desc.cacheType()));
+            res.add(new CacheConfigurationMigrationEntity(cacheCfg.getName(), cacheCfg, desc.sql(), desc.cacheType(), false));
         }
 
-        res.sort(Comparator.comparing(CacheConfigurationMigration::sourceName));
+        res.sort(Comparator.comparing(CacheConfigurationMigrationEntity::sourceName));
 
         return res;
     }

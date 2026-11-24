@@ -18,7 +18,7 @@
 package org.apache.ignite.util.migration.category.type;
 
 /** Platform-specific type mapping; the numeric ID must not be regenerated at the destination. */
-public class MigrationTypeMapping {
+public class TypeMappingMigrationEntity {
     /** */
     private final byte platformId;
 
@@ -33,7 +33,7 @@ public class MigrationTypeMapping {
      * @param typeId Type ID.
      * @param name Class name.
      */
-    public MigrationTypeMapping(byte platformId, int typeId, String name) {
+    public TypeMappingMigrationEntity(byte platformId, int typeId, String name) {
         this.platformId = platformId;
         this.typeId = typeId;
         this.name = name;

@@ -73,7 +73,7 @@ public abstract class AbstractCategoryTransferrer<SRC, ENTITY> implements Catego
     }
 
     /** {@inheritDoc} */
-    @Override public final void transfer(MigrationDestination dest, @Nullable MigrationTransformer<ENTITY> transformer) {
+    @Override public final void transfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<ENTITY> transformer) {
         long start = System.nanoTime();
 
         info("Starting category transfer [category=" + category() + ", transferrer=" +
@@ -86,11 +86,11 @@ public abstract class AbstractCategoryTransferrer<SRC, ENTITY> implements Catego
     }
 
     /** Performs the transfer implementation for this category. */
-    protected abstract void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<ENTITY> transformer);
+    protected abstract void doTransfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<ENTITY> transformer);
 
     /** Applies the transformer and writes one entity directly to the destination. */
     protected final void transferEntity(
-        MigrationDestination dest,
+        MigrationDestination<?> dest,
         @Nullable MigrationTransformer<ENTITY> transformer, ENTITY entity
     ) {
         if (entity == null)
@@ -106,7 +106,19 @@ public abstract class AbstractCategoryTransferrer<SRC, ENTITY> implements Catego
 
         dest.accept(category(), transformed);
 
+        onEntityAccepted(dest, transformed);
+
         info("Transferred " + entityDescription(transformed) + '.');
+    }
+
+    /**
+     * Called once an entity has been accepted by the destination.
+     *
+     * @param dest Migration destination.
+     * @param entity Entity written to the destination.
+     */
+    protected void onEntityAccepted(MigrationDestination<?> dest, ENTITY entity) {
+        // No-op.
     }
 
     /** Returns the category-specific description for an entity transfer log. */

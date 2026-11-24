@@ -31,20 +31,17 @@ import org.jetbrains.annotations.Nullable;
 import static org.apache.ignite.internal.MarshallerPlatformIds.JAVA_ID;
 
 /** Transfers Java mappings discoverable from a thin-client source. */
-public class ThinClientTypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteClient, MigrationTypeMapping> {
+public class ThinClientTypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteClient, TypeMappingMigrationEntity> {
     /**
      * @param from Connected thin-client source.
      * @param log Logger.
      */
     public ThinClientTypeMappingsTransferrer(IgniteClient from, IgniteLogger log) {
-        super(from, MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class, log);
+        super(from, MigrationCategory.TYPE_MAPPING, TypeMappingMigrationEntity.class, log);
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(
-        MigrationDestination dest,
-        @Nullable MigrationTransformer<MigrationTypeMapping> transformer
-    ) {
+    @Override protected void doTransfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<TypeMappingMigrationEntity> transformer) {
         Object binary0 = src.binary();
 
         if (!(binary0 instanceof ClientBinary cliBinary))
@@ -61,18 +58,17 @@ public class ThinClientTypeMappingsTransferrer extends AbstractCategoryTransferr
             try {
                 Class<?> cls = Class.forName(typeName, false, ldr);
 
-                transferEntity(dest, transformer, new MigrationTypeMapping(JAVA_ID, type.typeId(), cls.getName()));
+                transferEntity(dest, transformer, new TypeMappingMigrationEntity(JAVA_ID, type.typeId(), cls.getName()));
             }
             catch (ClassNotFoundException ignored) {
                 warn("Thin source does not have a Java class mapping for binary type; skipping it " +
                     "[typeName=" + typeName + ", typeId=" + type.typeId() + "].");
             }
         }
-
     }
 
     /** {@inheritDoc} */
-    @Override protected String entityDescription(MigrationTypeMapping mapping) {
+    @Override protected String entityDescription(TypeMappingMigrationEntity mapping) {
         return "type mapping [name='" + mapping.typeName() + "', typeId=" + mapping.typeId() +
             ", platformId=" + mapping.platformId() + "]";
     }

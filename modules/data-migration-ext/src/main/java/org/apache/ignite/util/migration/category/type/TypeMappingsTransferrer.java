@@ -29,26 +29,22 @@ import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
 import org.jetbrains.annotations.Nullable;
 
 /** Provides type mappings from a connected source. */
-public class TypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteEx, MigrationTypeMapping> {
+public class TypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteEx, TypeMappingMigrationEntity> {
     /**
      * @param from Migration source.
      * @param log Logger.
      */
     public TypeMappingsTransferrer(IgniteEx from, IgniteLogger log) {
-        super(from, MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class, log);
+        super(from, MigrationCategory.TYPE_MAPPING, TypeMappingMigrationEntity.class, log);
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(
-        MigrationDestination dest,
-        @Nullable MigrationTransformer<MigrationTypeMapping> transformer
-    ) {
+    @Override protected void doTransfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<TypeMappingMigrationEntity> transformer) {
         List<Map<Integer, MappedName>> mappings = src.context().marshallerContext().getCachedMappings();
 
         for (int platform = 0; platform < mappings.size(); platform++) {
             for (Map.Entry<Integer, MappedName> entry : mappings.get(platform).entrySet()) {
-                MigrationTypeMapping mapping =
-                    new MigrationTypeMapping((byte)platform, entry.getKey(), entry.getValue().className());
+                TypeMappingMigrationEntity mapping = new TypeMappingMigrationEntity((byte)platform, entry.getKey(), entry.getValue().className());
 
                 transferEntity(dest, transformer, mapping);
             }
@@ -56,7 +52,7 @@ public class TypeMappingsTransferrer extends AbstractCategoryTransferrer<IgniteE
     }
 
     /** {@inheritDoc} */
-    @Override protected String entityDescription(MigrationTypeMapping mapping) {
+    @Override protected String entityDescription(TypeMappingMigrationEntity mapping) {
         return "type mapping [name='" + mapping.typeName() + "', typeId=" + mapping.typeId() +
             ", platformId=" + mapping.platformId() + "]";
     }

@@ -32,8 +32,7 @@
         <!-- <property name="cacheMigration.cacheConfigurationTransformer" ref="myTransformer"/> -->
 
         <!-- Cache creation policy -->
-        <property name="cacheConfigurations.noCacheCreate" value="false"/>
-        <property name="cacheConfigurations.createCacheIfNotExists" value="true"/>
+        <property name="cacheMigration.createCacheIfNotExists" value="true"/>
 
         <!-- Data transfer -->
         <property name="cacheData.batchSize" value="256"/>

@@ -17,8 +17,10 @@
 
 package org.apache.ignite.util.migration;
 
+import java.util.List;
+
 /** Destination side of a migration. Receiver operations are associated with {@link MigrationCategory}. */
-public interface MigrationDestination extends MigrationOrigin {
+public interface MigrationDestination<T> extends MigrationOrigin<T> {
     /**
      * Accepts one transferred entity.
      *
@@ -26,4 +28,16 @@ public interface MigrationDestination extends MigrationOrigin {
      * @param entity Entity to accept.
      */
     void accept(MigrationCategory category, Object entity);
+
+    /**
+     * Accepts a batch of transferred entities. The default implementation forwards each entity to
+     * {@link #accept(MigrationCategory, Object)}.
+     *
+     * @param category Data category.
+     * @param entities Entities to accept.
+     */
+    default void acceptAll(MigrationCategory category, List<Object> entities) {
+        for (Object entity : entities)
+            accept(category, entity);
+    }
 }

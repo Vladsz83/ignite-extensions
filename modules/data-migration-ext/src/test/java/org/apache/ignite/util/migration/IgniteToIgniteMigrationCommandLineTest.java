@@ -54,7 +54,6 @@ public class IgniteToIgniteMigrationCommandLineTest {
         invalid("queue-capacity must be positive", "--queue-capacity", "0");
         invalid("Duplicate option", "--batch-size", "1", "--batch-size", "2");
         invalid("Missing value", "--batch-size");
-        invalid("mutually exclusive", "--no-cache-create", "--create-cache-if-not-exists");
         invalid("Cache group names must not be empty", "--cache-group-names", "accounts,,reference");
         assertThrows(IllegalArgumentException.class, () -> parse(
             "--src-client-node-config", "src.xml", "--dest-client-node-config", "dest.xml",
@@ -105,8 +104,6 @@ public class IgniteToIgniteMigrationCommandLineTest {
         assertEquals(256, cfg.cacheData().batchSize());
         assertEquals(4, cfg.cacheData().readThreads());
         assertEquals(4, cfg.cacheData().writeThreads());
-        assertFalse(cfg.cacheData().isReadThreadsConfigured());
-        assertFalse(cfg.cacheData().isWriteThreadsConfigured());
         assertEquals(CacheDataMigrationConfiguration.DFLT_QUEUE_CAPACITY, cfg.cacheData().queueCapacity());
 
         IgniteToIgniteMigrationConfiguration aliasCfg = IgniteToIgniteMigrationCommandLine.configuration(parse(
@@ -123,39 +120,7 @@ public class IgniteToIgniteMigrationCommandLineTest {
         IgniteToIgniteMigrationConfiguration explicit = configuration(parse(
             "--src-client-node-config", "src.xml", "--dest-client-node-config", "dest.xml", "--read-threads", "3"));
 
-        assertTrue(explicit.cacheData().isReadThreadsConfigured());
-        assertFalse(explicit.cacheData().isWriteThreadsConfigured());
         assertEquals(3, explicit.cacheData().readThreads());
-    }
-
-    /** Reader and writer counts have independent defaults and explicit overrides. */
-    @Test
-    public void testCacheWorkerThreadDefaultsAndOverrides() {
-        CacheDataMigrationConfiguration cfg = new CacheDataMigrationConfiguration();
-
-        assertEquals(4, cfg.readThreads());
-        assertEquals(4, cfg.writeThreads());
-        assertFalse(cfg.isReadThreadsConfigured());
-        assertFalse(cfg.isWriteThreadsConfigured());
-
-        cfg.readThreads(3);
-
-        assertEquals(3, cfg.readThreads());
-        assertEquals(4, cfg.writeThreads());
-        assertTrue(cfg.isReadThreadsConfigured());
-        assertFalse(cfg.isWriteThreadsConfigured());
-
-        cfg = new CacheDataMigrationConfiguration().writeThreads(2);
-
-        assertEquals(4, cfg.readThreads());
-        assertEquals(2, cfg.writeThreads());
-        assertFalse(cfg.isReadThreadsConfigured());
-        assertTrue(cfg.isWriteThreadsConfigured());
-
-        cfg = new CacheDataMigrationConfiguration().readThreads(3).writeThreads(5);
-
-        assertEquals(3, cfg.readThreads());
-        assertEquals(5, cfg.writeThreads());
     }
 
     /** Configuration XML is loaded and all properties are applied correctly. */
@@ -180,25 +145,22 @@ public class IgniteToIgniteMigrationCommandLineTest {
                 new java.util.ArrayList<>(cfg.getCacheMigration().cacheGroupNames()));
 
             // Cache creation policy
-            assertFalse(cfg.getCacheMigration().noCacheCreate());
             assertTrue(cfg.getCacheMigration().createCacheIfNotExists());
 
             // Data transfer
-            assertEquals(256, cfg.getCacheData().getBatchSize());
-            assertEquals(4, cfg.getCacheData().getReadThreads());
-            assertEquals(8, cfg.getCacheData().getWriteThreads());
-            assertTrue(cfg.getCacheData().isReadThreadsConfigured());
-            assertTrue(cfg.getCacheData().isWriteThreadsConfigured());
-            assertEquals(128, cfg.getCacheData().getQueueCapacity());
-            assertEquals(1000, cfg.getCacheData().getReadLimitInSec());
-            assertEquals(2000, cfg.getCacheData().getWriteLimitInSec());
-            assertTrue(cfg.getCacheData().isSkipExpireTime());
-            assertTrue(cfg.getCacheData().isSkipConflictVersion());
-            assertFalse(cfg.getCacheData().isUseDataStreamer());
+            assertEquals(256, cfg.cacheData().batchSize());
+            assertEquals(4, cfg.cacheData().readThreads());
+            assertEquals(8, cfg.cacheData().writeThreads());
+            assertEquals(128, cfg.cacheData().queueCapacity());
+            assertEquals(1000, cfg.cacheData().readLimitInSec());
+            assertEquals(2000, cfg.cacheData().writeLimitInSec());
+            assertTrue(cfg.cacheData().skipExpireTime());
+            assertTrue(cfg.cacheData().skipConflictVersion());
+            assertFalse(cfg.cacheData().useDataStreamer());
 
             // Metastorage
             assertTrue(cfg.getMetastorage().isIgnoreDefaultFilter());
-            assertEquals(1, cfg.getMetastorage().getFilters().size());
+            assertEquals(1, cfg.getMetastorage().filters().size());
         }
     }
 
@@ -222,11 +184,11 @@ public class IgniteToIgniteMigrationCommandLineTest {
 
             IgniteToIgniteMigrationCommandLine.merge(cfg, xmlCfg, options);
 
-            assertTrue(cfg.getCacheData().isSkipConflictVersion());
-            assertEquals(2, cfg.getCacheData().getReadThreads());
-            assertEquals(8, cfg.getCacheData().getWriteThreads());
-            assertEquals(128, cfg.getCacheData().getQueueCapacity());
-            assertEquals(1, cfg.getMetastorage().getFilters().size());
+            assertTrue(cfg.cacheData().skipConflictVersion());
+            assertEquals(2, cfg.cacheData().readThreads());
+            assertEquals(8, cfg.cacheData().writeThreads());
+            assertEquals(128, cfg.cacheData().queueCapacity());
+            assertEquals(1, cfg.getMetastorage().filters().size());
             assertSame(transformer, cfg.getCacheMigration().cacheConfigurationTransformer());
         }
 

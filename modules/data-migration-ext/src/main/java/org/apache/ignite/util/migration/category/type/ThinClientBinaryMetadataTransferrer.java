@@ -17,6 +17,8 @@
 
 package org.apache.ignite.util.migration.category.type;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.binary.BinaryType;
@@ -31,6 +33,9 @@ import org.jetbrains.annotations.Nullable;
 
 /** Transfers binary metadata available to a thin-client source. */
 public class ThinClientBinaryMetadataTransferrer extends AbstractCategoryTransferrer<IgniteClient, BinaryMetadata> {
+    /** Binary type IDs accepted at the destination by this transfer. */
+    private final Set<Integer> transferredTypeIds = ConcurrentHashMap.newKeySet();
+
     /**
      * @param from Connected thin-client source.
      * @param log Logger.
@@ -39,9 +44,19 @@ public class ThinClientBinaryMetadataTransferrer extends AbstractCategoryTransfe
         super(from, MigrationCategory.BINARY_METADATA, BinaryMetadata.class, log);
     }
 
+    /** @return Binary type IDs accepted at the destination by this transfer. */
+    public Set<Integer> transferredTypeIds() {
+        return transferredTypeIds;
+    }
+
+    /** {@inheritDoc} */
+    @Override protected void onEntityAccepted(MigrationDestination<?> dest, BinaryMetadata entity) {
+        transferredTypeIds.add(entity.typeId());
+    }
+
     /** {@inheritDoc} */
     @Override protected void doTransfer(
-        MigrationDestination dest,
+        MigrationDestination<?> dest,
         @Nullable MigrationTransformer<BinaryMetadata> transformer
     ) {
         Object binary0 = src.binary();

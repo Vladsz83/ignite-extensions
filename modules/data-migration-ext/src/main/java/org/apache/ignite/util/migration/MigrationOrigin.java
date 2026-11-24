@@ -17,12 +17,13 @@
 
 package org.apache.ignite.util.migration;
 
-import java.util.LinkedHashMap;
+import org.apache.ignite.Ignite;
+import org.apache.ignite.client.IgniteClient;
 
 /** A migration endpoint (source or destination). */
-public interface MigrationOrigin extends AutoCloseable {
-    /** @return Categories available from this endpoint and their payload classes. */
-    LinkedHashMap<MigrationCategory, Class<?>> supportedCategories();
+public interface MigrationOrigin<T> extends AutoCloseable {
+    /** The origin like {@link Ignite} or {@link IgniteClient}. */
+    T origin();
 
     /**
      * Connects this endpoint and returns its source or destination connection.

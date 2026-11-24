@@ -17,7 +17,6 @@
 
 package org.apache.ignite.util.migration.endpoint;
 
-import java.util.LinkedHashMap;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.Ignition;
@@ -30,10 +29,9 @@ import org.apache.ignite.internal.binary.BinaryMetadata;
 import org.apache.ignite.internal.client.thin.ClientBinary;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
+import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigrationEntity;
 import org.apache.ignite.util.migration.category.cache.configuration.ThinClientCacheConfigurationsTransferrer;
-import org.apache.ignite.util.migration.category.cache.data.CacheEntryMigration;
-import org.apache.ignite.util.migration.category.type.MigrationTypeMapping;
+import org.apache.ignite.util.migration.category.type.TypeMappingMigrationEntity;
 
 import static org.apache.ignite.internal.MarshallerPlatformIds.JAVA_ID;
 
@@ -67,19 +65,6 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
     }
 
     /** {@inheritDoc} */
-    /** {@inheritDoc} */
-    @Override public LinkedHashMap<MigrationCategory, Class<?>> supportedCategories() {
-        LinkedHashMap<MigrationCategory, Class<?>> categories = new LinkedHashMap<>();
-
-        categories.put(MigrationCategory.BINARY_METADATA, BinaryMetadata.class);
-        categories.put(MigrationCategory.TYPE_MAPPING, MigrationTypeMapping.class);
-        categories.put(MigrationCategory.CACHE_CONFIGURATION, CacheConfigurationMigration.class);
-        categories.put(MigrationCategory.CACHE_ENTRY, CacheEntryMigration.class);
-
-        return categories;
-    }
-
-    /** {@inheritDoc} */
     @Override public void accept(MigrationCategory category, Object entity) {
         if (client == null)
             throw new IgniteException("Migration destination is not connected.");
@@ -101,10 +86,10 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
         }
 
         if (category == MigrationCategory.TYPE_MAPPING) {
-            if (!(entity instanceof MigrationTypeMapping))
+            if (!(entity instanceof TypeMappingMigrationEntity))
                 throw new IgniteException("Expected MigrationTypeMapping for migration category: " + category);
 
-            MigrationTypeMapping mapping = (MigrationTypeMapping)entity;
+            TypeMappingMigrationEntity mapping = (TypeMappingMigrationEntity)entity;
 
             if (mapping.platformId() != JAVA_ID) {
                 IgniteLogger log = cfg.getLogger();
@@ -123,10 +108,10 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
         }
 
         if (category == MigrationCategory.CACHE_CONFIGURATION) {
-            if (!(entity instanceof CacheConfigurationMigration))
+            if (!(entity instanceof CacheConfigurationMigrationEntity))
                 throw new IgniteException("Expected CacheConfigurationMigration for migration category: " + category);
 
-            acceptCacheConfiguration((CacheConfigurationMigration)entity);
+            acceptCacheConfiguration((CacheConfigurationMigrationEntity)entity);
 
             return;
         }
@@ -134,20 +119,13 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
         throw new IgniteException("Destination does not accept migration category: " + category);
     }
 
-    /** Creates a cache through the thin-client API using the policy carried in the entity. */
-    private void acceptCacheConfiguration(CacheConfigurationMigration cache) {
+    /** Creates a cache on the destination through the thin-client API. */
+    private void acceptCacheConfiguration(CacheConfigurationMigrationEntity cache) {
         if (client == null)
             throw new IgniteException("Migration destination is not connected.");
 
         String name = cache.configuration().getName();
         boolean exists = client.cacheNames().contains(name);
-
-        if (cache.noCacheCreate()) {
-            if (!exists)
-                throw new IgniteException("Destination cache does not exist [cache=" + name + "].");
-
-            return;
-        }
 
         if (exists && !cache.createCacheIfNotExists())
             throw new CacheExistsException("Destination cache already exists [cache=" + name + "].");
@@ -177,6 +155,11 @@ public class ThinClientMigrationEndpoint implements MigrationDestination {
             throw new IgniteException("Failed to create destination cache through the thin client [cache=" + name +
                 "].", e);
         }
+    }
+
+    /** {@inheritDoc} */
+    @Override public IgniteClient origin() {
+        return client;
     }
 
     /** {@inheritDoc} */

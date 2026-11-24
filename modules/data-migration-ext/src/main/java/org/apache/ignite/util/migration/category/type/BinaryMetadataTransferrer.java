@@ -39,10 +39,7 @@ public class BinaryMetadataTransferrer extends AbstractCategoryTransferrer<Ignit
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(
-        MigrationDestination dest,
-        @Nullable MigrationTransformer<BinaryMetadata> transformer
-    ) {
+    @Override protected void doTransfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<BinaryMetadata> transformer) {
         BinaryContext bCtxFrom = src.context().cacheObjects().binaryContext();
 
         for (BinaryType type : bCtxFrom.metadata()) {

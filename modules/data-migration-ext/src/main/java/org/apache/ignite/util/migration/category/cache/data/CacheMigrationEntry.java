@@ -17,23 +17,21 @@
 
 package org.apache.ignite.util.migration.category.cache.data;
 
-import java.io.Serializable;
 import java.util.Objects;
 import org.apache.ignite.internal.processors.cache.version.GridCacheVersion;
+import org.jetbrains.annotations.Nullable;
 
 /** Value and metadata read from the same stored row. Keys and values remain binary. */
-public class CacheEntryMigration implements Serializable {
-    /** */
-    private static final long serialVersionUID = 0L;
-
+public class CacheMigrationEntry {
     /** */
     private final Object key;
 
     /** */
     private final Object val;
 
-    /** Absolute expiration timestamp, or zero for an eternal entry. */
-    private final long expireTime;
+    /** Absolute expiration timestamp, or {@code null} for an eternal entry. */
+    @Nullable
+    private final Long expireTime;
 
     /** Original version, including the other-cluster version when present. */
     private final GridCacheVersion ver;
@@ -41,10 +39,10 @@ public class CacheEntryMigration implements Serializable {
     /**
      * @param key Key.
      * @param val Value.
-     * @param expireTime Expiration timestamp, or zero for an eternal entry.
+     * @param expireTime Expiration timestamp, or {@code null} for an eternal entry.
      * @param ver Source version.
      */
-    public CacheEntryMigration(Object key, Object val, long expireTime, GridCacheVersion ver) {
+    public CacheMigrationEntry(Object key, Object val, @Nullable Long expireTime, GridCacheVersion ver) {
         this.key = Objects.requireNonNull(key, "key");
         this.val = Objects.requireNonNull(val, "value");
         this.expireTime = expireTime;
@@ -62,7 +60,8 @@ public class CacheEntryMigration implements Serializable {
     }
 
     /** @return Absolute expiration timestamp. */
-    public long expireTime() {
+    @Nullable
+    public Long expireTime() {
         return expireTime;
     }
 

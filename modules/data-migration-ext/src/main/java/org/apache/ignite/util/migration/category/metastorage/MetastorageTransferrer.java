@@ -28,6 +28,7 @@ import org.apache.ignite.IgniteCheckedException;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.internal.IgniteEx;
+import org.apache.ignite.internal.util.typedef.T2;
 import org.apache.ignite.util.migration.MigrationCategory;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
@@ -40,7 +41,7 @@ import org.jetbrains.annotations.Nullable;
  * graceful-stop node ids, and SQL views when the destination has no SQL schema. Configured key
  * filters and a transformer can additionally skip or transform entries.
  */
-public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx, Map.Entry<String, Serializable>> {
+public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx, T2<String, Serializable>> {
     /** */
     private static final String VIEW_PREFIX = "ignite.internal.sql.view.";
 
@@ -78,15 +79,11 @@ public class MetastorageTransferrer extends AbstractCategoryTransferrer<IgniteEx
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(
-        MigrationDestination dest,
-        @Nullable MigrationTransformer<Map.Entry<String, Serializable>> transformer
-    ) {
-        MetastorageKeyFilterTransformer notPortableFilter =
-            cfg.ignoreDefaultFilter() ? null : notPortableKeyFilter();
+    @Override protected void doTransfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<T2<String, Serializable>> transformer) {
+        MetastorageKeyFilterTransformer notPortableFilter = cfg.ignoreDefaultFilter() ? null : notPortableKeyFilter();
 
         BiConsumer<String, Serializable> transferEntry = (key, val) -> {
-            Map.Entry<String, Serializable> candidate = new SimpleImmutableEntry<>(key, val);
+            T2<String, Serializable> candidate = new T2(key, val);
 
             // The default filter runs first, on the original key, so a later filter or transformer
             // cannot re-enable copying of a non-portable key (e.g. by renaming it).

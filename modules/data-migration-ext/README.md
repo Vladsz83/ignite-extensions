@@ -110,7 +110,6 @@ the cache's configured access-expiration behavior.
 | `--dest-thin-config path` | One destination option required | Spring XML with `ClientConfiguration`. |
 | `--destination class` | None | Public no-argument `MigrationDestination`, instead of a built-in destination. |
 | `--cache-group-names a,b` | All | Source groups; an ungrouped cache is selected by its cache name. |
-| `--no-cache-create` | false | Require all selected destination caches to exist. |
 | `--create-cache-if-not-exists` | false | Accept existing destination caches and create missing ones. |
 | `--no-binary-metadata-create` | false | Skip explicit binary metadata registration. |
 | `--no-mappings-create` | false | Skip explicit type mapping registration. |
@@ -130,8 +129,7 @@ the cache's configured access-expiration behavior.
 
 `--no-binary-metdata-create` is accepted as an alias for the spelling in the ticket.
 `--skip-cdc-info` is accepted as an alias for `--skip-conflict-version`.
-`--no-cache-create` and `--create-cache-if-not-exists` are mutually exclusive.
-Without either option, an existing selected destination cache is an error.
+Without `--create-cache-if-not-exists`, an existing selected destination cache is an error.
 The utility does not delete destination records absent from the source.
 
 ### Thin-client limitations
@@ -202,12 +200,10 @@ under `org.apache.ignite.util.migration.category`:
 
 `ThickClientMigrationEndpoint` and `ThinClientMigrationEndpoint` live in
 `org.apache.ignite.util.migration.endpoint` and implement `MigrationDestination`, which extends
-the common `MigrationOrigin` contract. Each endpoint provides a `LinkedHashMap` of supported
-categories to payload classes; the destination map order declares processing priority. Its
-`connect()` returns the raw connection. The destination also accepts individual category
-entities. Thick endpoints provide metadata, mappings, cache configuration, metastorage entries
-and cache entries. Thin endpoints provide locally available metadata and Java mappings, cache
-configuration, and cache entries.
+the common `MigrationOrigin` contract. Its `connect()` returns the raw connection. The destination
+also accepts individual category entities: a thick destination accepts metadata, mappings, cache
+configuration, metastorage entries, while a thin destination accepts metadata, mappings and cache
+configuration. Cache records are written through the connection APIs, not `accept`.
 Different clusters are checked by cluster UUID for thick clients and overlapping server node IDs
 when a thin client is involved.
 
@@ -215,12 +211,14 @@ when a thin client is involved.
 operation. Every category uses this contract. Metadata and mapping transferrers read, transform,
 and send each item directly to `MigrationDestination.accept` on the transfer thread, without an
 intermediate collection; a `null` transformer result skips that item. No category provider is exposed as an `Iterable`. `IgniteToIgniteMigration`
-selects compatible categories and runs them in destination priority order. Category IDs are stable;
-add new enum values only with IDs greater than all existing values, and never reuse an ID.
+runs the transferrers in a fixed dependency order: binary metadata, type mappings, cache
+configuration, metastorage (thick source with a thick destination only), then cache data. Category
+IDs are stable; add new enum values only with IDs greater than all existing values, and never
+reuse an ID.
 
-Cache data migration owns separate reader and writer pools, each defaulting to four threads.
-They are closed by the transferrer after its work finishes; there is no shared migration-wide
-executor.
+Cache data migration owns one shared worker pool sized to the reader and writer worker counts,
+each defaulting to four threads. It is closed by the transferrer after its work finishes; there is
+no shared migration-wide executor.
 
 Each transferrer reads and writes its own entities through the origins. The metastorage
 transferrer scans source distributed metastorage through its callback API and writes keys to the destination.
@@ -230,11 +228,11 @@ graceful-shutdown coordination, which holds source node ids, and SQL view defini
 when the destination has no SQL schema. The filter can be disabled with
 `--ignore-default-filter`, which copies all of these entries unconditionally.
 
-Cache configuration and data transferrers share a `MigrationCachePlan` describing
-selected cache definitions and name mappings. This helper prepares the selection once
-on first use and performs no destination writes. Transferrers consume the plan directly;
-they do not receive other transferrers or callbacks into them. Cache selection runs even
-with `--no-cache-create`.
+Cache configuration and data transferrers share a prepared selection of cache
+definitions and name mappings. The selection is prepared once on first use and performs
+no destination writes. Transferrers consume the selection directly; they do not receive
+other transferrers or callbacks into them. Cache selection runs even when all destination
+caches already exist, because the data transferrer needs the name mapping.
 The cache-data transferrer owns the reader/writer queue, rate limits and worker cleanup.
 
 Cache definitions are detached copies. A transformer can change backups, affinity,

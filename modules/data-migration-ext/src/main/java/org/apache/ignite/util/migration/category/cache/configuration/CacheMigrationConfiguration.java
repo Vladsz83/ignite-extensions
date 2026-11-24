@@ -17,23 +17,14 @@
 
 package org.apache.ignite.util.migration.category.cache.configuration;
 
-import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
-import java.util.function.BiFunction;
 import java.util.function.Function;
-import java.util.function.Supplier;
-import org.apache.ignite.IgniteException;
-import org.apache.ignite.IgniteLogger;
 import org.apache.ignite.configuration.CacheConfiguration;
-import org.apache.ignite.internal.IgniteEx;
-import org.apache.ignite.internal.processors.cache.CacheType;
-import org.apache.ignite.util.migration.MigrationTransformer;
-import org.jetbrains.annotations.Nullable;
 
 /** Caches migration configuration. */
 public class CacheMigrationConfiguration {
@@ -44,17 +35,10 @@ public class CacheMigrationConfiguration {
     private boolean moveDataStructures = true;
 
     /** */
-    private boolean noCacheCreate;
-
-    /** */
     private boolean createCacheIfNotExists;
 
     /** */
     private Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> cacheCfgTransformer = Function.identity();
-
-    /** Resolved at prepare() time with the connected destination node. */
-    @Nullable
-    private BiFunction<IgniteEx, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> cacheCfgBiTransformer;
 
     /**
      * @param cfg Source cache configuration.
@@ -69,9 +53,6 @@ public class CacheMigrationConfiguration {
     public void validate() {
         validatedNames(grpNames);
         Objects.requireNonNull(cacheCfgTransformer, "cache configuration transformer");
-
-        if (noCacheCreate && createCacheIfNotExists)
-            throw new IllegalArgumentException("no-cache-create and create-cache-if-not-exists are mutually exclusive.");
     }
 
     /** @return Whether data structure caches are included. */
@@ -84,20 +65,9 @@ public class CacheMigrationConfiguration {
         return cacheCfgTransformer;
     }
 
-    /** @return Cache configuration BiFunction (receives the destination IgniteEx at prepare time). */
-    @Nullable
-    public BiFunction<IgniteEx, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> cacheConfigurationBiTransformer() {
-        return cacheCfgBiTransformer;
-    }
-
     /** @return Source cache group names. */
     public Set<String> cacheGroupNames() {
         return grpNames;
-    }
-
-    /** @return Whether cache creation is disabled. */
-    public boolean noCacheCreate() {
-        return noCacheCreate;
     }
 
     /** @return Whether existing destination caches are accepted. */
@@ -115,11 +85,6 @@ public class CacheMigrationConfiguration {
         moveDataStructures = val;
     }
 
-    /** @param val Whether all selected destination caches must already exist. */
-    public void setNoCacheCreate(boolean val) {
-        noCacheCreate = val;
-    }
-
     /** @param val Whether existing destination caches are accepted. */
     public void setCreateCacheIfNotExists(boolean val) {
         createCacheIfNotExists = val;
@@ -128,89 +93,6 @@ public class CacheMigrationConfiguration {
     /** @param transformer Cache configuration transformer. */
     public void setCacheConfigurationTransformer(Function<CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer) {
         cacheCfgTransformer = Objects.requireNonNull(transformer);
-    }
-
-    /** @param transformer Cache configuration BiFunction receiving the connected destination. */
-    public void setCacheConfigurationBiTransformer(
-        BiFunction<IgniteEx, CacheConfiguration<?, ?>, CacheConfiguration<?, ?>> transformer
-    ) {
-        cacheCfgBiTransformer = Objects.requireNonNull(transformer);
-    }
-
-    /**
-     * Selects and transforms source caches according to this configuration.
-     *
-     * @param src Lazy supplier of source cache definitions.
-     * @param dest Connected destination node, passed to the BiFunction transformer if set.
-     * @param destSupportsDs Whether the destination supports data-structure caches.
-     * @param transformer Cache selection and transformation callback.
-     * @param log Logger.
-     * @return Selected and transformed cache definitions.
-     */
-    public List<CacheConfigurationMigration> prepare(
-        Supplier<Collection<CacheConfigurationMigration>> src,
-        @Nullable IgniteEx dest,
-        boolean destSupportsDs,
-        MigrationTransformer<CacheConfigurationMigration> transformer,
-        IgniteLogger log
-    ) {
-        List<CacheConfigurationMigration> sel = new ArrayList<>();
-        Set<String> dstNames = new HashSet<>();
-
-        for (CacheConfigurationMigration item : src.get()) {
-            if (!includes(item.configuration())) {
-                if (log.isInfoEnabled()) {
-                    log.info("Skipped cache [sourceName=" + item.sourceName() + ", reason='cache group filter'].");
-                }
-
-                continue;
-            }
-
-            if (item.type() == CacheType.DATA_STRUCTURES && (!moveDataStructures() || !destSupportsDs)) {
-                if (log.isInfoEnabled()) {
-                    log.info("Skipped data structure cache [sourceName=" + item.sourceName() + ", reason='" +
-                        (!moveDataStructures() ? "move-data-structures=false" :
-                            "destination does not support data structures") + "'].");
-                }
-
-                continue;
-            }
-
-            String grpName = item.configuration().getGroupName();
-            CacheConfigurationMigration cache = transformer.transform(item);
-
-            if (cache == null) {
-                if (log.isInfoEnabled()) {
-                    log.info("Skipped cache [sourceName=" + item.sourceName() + ", reason='cache transformer returned null'].");
-                }
-
-                continue;
-            }
-
-            CacheConfiguration<?, ?> cacheCfg = cacheCfgBiTransformer != null && dest != null ?
-                cacheCfgBiTransformer.apply(dest, cache.configuration()) : cacheCfgTransformer.apply(cache.configuration());
-
-            if (cacheCfg == null) {
-                if (log.isInfoEnabled()) {
-                    log.info("Skipped cache [sourceName=" + item.sourceName() +
-                        ", reason='cache configuration transformer returned null'].");
-                }
-
-                continue;
-            }
-
-            if (item.type() == CacheType.DATA_STRUCTURES &&
-                (!item.sourceName().equals(cacheCfg.getName()) || !Objects.equals(grpName, cacheCfg.getGroupName())))
-                throw new IgniteException("Data structure cache and group names must be preserved: " + item.sourceName() + '.');
-
-            if (cacheCfg.getName() == null || cacheCfg.getName().isEmpty() || !dstNames.add(cacheCfg.getName()))
-                throw new IgniteException("Invalid or duplicate transformed cache name: " + cacheCfg.getName() + '.');
-
-            sel.add(new CacheConfigurationMigration(item.sourceName(), cacheCfg, cache.sql(), item.type(), noCacheCreate,
-                createCacheIfNotExists));
-        }
-
-        return Collections.unmodifiableList(sel);
     }
 
     /** Creates a validated, detached set of selected names. */

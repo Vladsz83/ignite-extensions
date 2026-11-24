@@ -33,24 +33,31 @@ import org.apache.ignite.resources.IgniteInstanceResource;
  * this metadata. A second local row lookup avoids combining a scanned value with metadata from a later update.
  * Requires this extension on source servers or peer class loading.
  */
-public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, Object>, CacheEntryMigration> {
+public class CaccheMigrationEntryReader implements IgniteClosure<Cache.Entry<Object, Object>, CacheMigrationEntry> {
     /** */
     private static final long serialVersionUID = 0L;
 
     /** */
     private final String cacheName;
 
+    /** Whether the source expiration timestamp is ignored and left as {@code null}. */
+    private final boolean skipExpireTime;
+
     /** */
     @IgniteInstanceResource
     private transient Ignite ignite;
 
-    /** @param cacheName Source cache name. */
-    public MigrationEntryReader(String cacheName) {
+    /**
+     * @param cacheName Source cache name.
+     * @param skipExpireTime Whether the source expiration timestamp is ignored.
+     */
+    public CaccheMigrationEntryReader(String cacheName, boolean skipExpireTime) {
         this.cacheName = cacheName;
+        this.skipExpireTime = skipExpireTime;
     }
 
     /** {@inheritDoc} */
-    @Override public CacheEntryMigration apply(Cache.Entry<Object, Object> entry) {
+    @Override public CacheMigrationEntry apply(Cache.Entry<Object, Object> entry) {
         GridCacheContext<Object, Object> ctx = ((IgniteEx)ignite).cachex(cacheName).context();
 
         ctx.shared().database().checkpointReadLock();
@@ -61,10 +68,12 @@ public class MigrationEntryReader implements IgniteClosure<Cache.Entry<Object, O
             if (row == null || row.expireTime() > 0 && row.expireTime() <= System.currentTimeMillis())
                 return null;
 
-            return new CacheEntryMigration(
+            return new CacheMigrationEntry(
                 CacheObjectUtils.unwrapBinaryIfNeeded(ctx.cacheObjectContext(), row.key(), true, false),
                 CacheObjectUtils.unwrapBinaryIfNeeded(ctx.cacheObjectContext(), row.value(), true, false),
-                row.expireTime(), row.version());
+                !skipExpireTime && row.expireTime() > 0 ? row.expireTime() : null,
+                row.version()
+            );
         }
         catch (IgniteCheckedException e) {
             throw new IgniteException("Failed to read migration row [cache=" + cacheName + "].", e);

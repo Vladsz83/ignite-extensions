@@ -25,25 +25,14 @@ import java.util.Objects;
 /** Metastorage migration settings. */
 public class MetastorageMigrationConfiguration {
     /** */
-    private boolean ignoreDefaultFilter;
+    private boolean ignoreDfltFilter;
 
     /** */
     private final List<MetastorageKeyFilterTransformer> filters = new ArrayList<>();
 
     /** @return Whether the built-in default key filter is disabled. */
     public boolean ignoreDefaultFilter() {
-        return ignoreDefaultFilter;
-    }
-
-    /**
-     * @param val Whether to skip the built-in default key filter, which otherwise always excludes
-     *     entries that are not portable to another cluster.
-     * @return {@code this} for chaining.
-     */
-    public MetastorageMigrationConfiguration ignoreDefaultFilter(boolean val) {
-        ignoreDefaultFilter = val;
-
-        return this;
+        return ignoreDfltFilter;
     }
 
     /**
@@ -66,17 +55,12 @@ public class MetastorageMigrationConfiguration {
 
     /** @return Whether the built-in default key filter is disabled. */
     public boolean isIgnoreDefaultFilter() {
-        return ignoreDefaultFilter;
+        return ignoreDfltFilter;
     }
 
     /** @param val Whether to skip the built-in default key filter. */
     public void setIgnoreDefaultFilter(boolean val) {
-        ignoreDefaultFilter = val;
-    }
-
-    /** @return Configured key filters. */
-    public List<MetastorageKeyFilterTransformer> getFilters() {
-        return filters;
+        ignoreDfltFilter = val;
     }
 
     /** @param filters Configured key filters, replacing any previously set filters. */

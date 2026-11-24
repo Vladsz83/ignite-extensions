@@ -17,313 +17,97 @@
 
 package org.apache.ignite.util.migration.category.cache.data;
 
-import java.util.AbstractMap.SimpleImmutableEntry;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
-import java.util.HashMap;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Queue;
-import java.util.Set;
 import java.util.UUID;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorCompletionService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
-import java.util.concurrent.LinkedBlockingQueue;
-import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.concurrent.atomic.AtomicLong;
-import javax.cache.expiry.Duration;
-import javax.cache.expiry.ModifiedExpiryPolicy;
-import org.apache.ignite.IgniteCache;
 import org.apache.ignite.IgniteCheckedException;
-import org.apache.ignite.IgniteDataStreamer;
 import org.apache.ignite.IgniteException;
 import org.apache.ignite.IgniteLogger;
+import org.apache.ignite.cache.affinity.Affinity;
 import org.apache.ignite.cache.query.QueryCursor;
 import org.apache.ignite.cluster.ClusterNode;
 import org.apache.ignite.internal.IgniteEx;
-import org.apache.ignite.internal.IgniteInterruptedCheckedException;
-import org.apache.ignite.internal.processors.cache.CacheOperationContext;
 import org.apache.ignite.internal.processors.cache.GridCacheContext;
-import org.apache.ignite.internal.processors.cache.IgniteCacheProxyImpl;
-import org.apache.ignite.internal.processors.cache.IgniteInternalCache;
-import org.apache.ignite.internal.processors.cache.KeyCacheObject;
 import org.apache.ignite.internal.processors.cache.QueryCursorImpl;
-import org.apache.ignite.internal.processors.cache.dr.GridCacheDrExpirationInfo;
-import org.apache.ignite.internal.processors.cache.dr.GridCacheDrInfo;
 import org.apache.ignite.internal.processors.cache.query.CacheQuery;
-import org.apache.ignite.internal.processors.cache.version.GridCacheVersion;
-import org.apache.ignite.internal.processors.datastructures.GridCacheCountDownLatchValue;
-import org.apache.ignite.internal.processors.datastructures.GridCacheLockState;
-import org.apache.ignite.internal.processors.datastructures.GridCacheSemaphoreState;
-import org.apache.ignite.internal.thread.IgniteThreadFactory;
-import org.apache.ignite.internal.util.BasicRateLimiter;
 import org.apache.ignite.internal.util.lang.GridCloseableIterator;
 import org.apache.ignite.internal.util.lang.IgniteOutClosureX;
-import org.apache.ignite.internal.util.typedef.internal.U;
-import org.apache.ignite.util.migration.MigrationCategory;
+import org.apache.ignite.internal.util.typedef.T2;
 import org.apache.ignite.util.migration.MigrationDestination;
 import org.apache.ignite.util.migration.MigrationTransformer;
-import org.apache.ignite.util.migration.category.AbstractCategoryTransferrer;
-import org.apache.ignite.util.migration.category.cache.configuration.CacheConfigurationMigration;
+import org.jetbrains.annotations.Nullable;
 
 import static org.apache.ignite.internal.processors.cache.query.GridCacheQueryType.SCAN;
-import static org.apache.ignite.plugin.security.SecurityPermission.CACHE_READ;
 
 /** Transfers cache records through partition readers and a bounded queue of write batches. */
-public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, CacheEntryMigration> {
-    /** Destination connection. */
-    private final Object to;
+public class CacheDataTransferrer extends AbstractCacheDataTransferrer<IgniteEx> {
+    /** Partitions not yet assigned to a reader; consumed round-robin by primary node. */
+    private final ConcurrentLinkedQueue<T2<String, Integer>> partitionsToRead = new ConcurrentLinkedQueue<>();
 
-    /** */
-    private final CacheDataMigrationConfiguration cfg;
-
-    /** */
-    private final List<CacheConfigurationMigration> caches;
-
-    /** Source cache name to destination cache name. */
-    private final Map<String, String> cacheNameMap;
-
-    /** Source cache to partition number. */
-    private final Queue<Map.Entry<String, Integer>> pending = new ConcurrentLinkedQueue<>();
-
-    /** */
-    private final BlockingQueue<Batch> batches;
-
-    /** */
-    private final Set<QueryCursor<CacheEntryMigration>> cursors = ConcurrentHashMap.newKeySet();
-
-    /** */
-    private final Map<String, IgniteDataStreamer<Object, Object>> streamers = new ConcurrentHashMap<>();
-
-    /** */
-    private final AtomicInteger readers;
-
-    /** */
-    private final AtomicInteger completed = new AtomicInteger();
-
-    /** */
-    private final AtomicLong read = new AtomicLong();
-
-    /** */
-    private final AtomicLong written = new AtomicLong();
-
-    /** */
-    private final BasicRateLimiter readLimiter;
-
-    /** */
-    private final BasicRateLimiter writeLimiter;
-
-    /** */
+    /** Total source partitions selected for transfer. */
     private int partsCnt;
 
-    /** Thick source connection for this transfer. */
-    private IgniteEx srcIg;
-
-    /** Thick destination connection for this transfer. */
-    private IgniteEx destIg;
-
-    /** Whether binary metadata creation is disabled. */
-    private final boolean noBinaryMetadataCreate;
-
-    /** Whether platform type mapping registration is disabled. */
-    private final boolean noMappingsCreate;
+    /** Completed partition scans. */
+    private final AtomicInteger completed = new AtomicInteger();
 
     /**
-     * @param from Connected source.
-     * @param to Connected destination.
+     * @param src Connected thick source.
      * @param log Logger.
      * @param cfg Data transfer knobs.
-     * @param caches Selected and transformed cache definitions.
+     * @param cacheNameMap Source cache name to destination cache name.
      */
     public CacheDataTransferrer(
-        Object from,
-        Object to,
+        IgniteEx src,
         IgniteLogger log,
         CacheDataMigrationConfiguration cfg,
-        List<CacheConfigurationMigration> caches
+        Map<String, String> cacheNameMap
     ) {
-        this(from, to, log, cfg, caches, false, false);
-    }
-
-    /**
-     * @param from Connected source.
-     * @param to Connected destination.
-     * @param log Logger.
-     * @param cfg Data transfer knobs.
-     * @param caches Selected and transformed cache definitions.
-     * @param noBinaryMetadataCreate Whether binary metadata creation is disabled.
-     * @param noMappingsCreate Whether mapping registration is disabled.
-     */
-    public CacheDataTransferrer(
-        Object from,
-        Object to,
-        IgniteLogger log,
-        CacheDataMigrationConfiguration cfg,
-        List<CacheConfigurationMigration> caches,
-        boolean noBinaryMetadataCreate,
-        boolean noMappingsCreate
-    ) {
-        super(from, MigrationCategory.CACHE_ENTRY, CacheEntryMigration.class, log);
-
-        this.to = to;
-        this.cfg = cfg;
-        this.caches = caches;
-
-        Map<String, String> nameMap = new LinkedHashMap<>(caches.size());
-
-        for (CacheConfigurationMigration c : caches)
-            nameMap.put(c.sourceName(), c.configuration().getName());
-
-        this.cacheNameMap = Collections.unmodifiableMap(nameMap);
-        this.noBinaryMetadataCreate = noBinaryMetadataCreate;
-        this.noMappingsCreate = noMappingsCreate;
-        batches = new ArrayBlockingQueue<>(cfg.queueCapacity());
-        readers = new AtomicInteger();
-        readLimiter = new BasicRateLimiter(cfg.readLimitInSec());
-        writeLimiter = new BasicRateLimiter(cfg.writeLimitInSec());
+        super(src, log, cfg, cacheNameMap);
     }
 
     /** {@inheritDoc} */
-    @Override protected void doTransfer(MigrationDestination dest, MigrationTransformer<CacheEntryMigration> transformer) {
-        Object src = this.src;
-        Object destOrigin = to;
+    @Override protected void beforeTransfer(
+        MigrationDestination<?> dest,
+        @Nullable MigrationTransformer<CacheMigrationEntry> transformer
+    ) {
+        List<T2<String, Integer>> parts = partitions(src, cacheNameMap.keySet());
 
-        if (!(src instanceof IgniteEx) || !(destOrigin instanceof IgniteEx)) {
-            new ThinClientCacheDataTransferrer(src, destOrigin, dest, log, cfg, caches, this,
-                noBinaryMetadataCreate, noMappingsCreate).transfer(transformer);
-
-            return;
-        }
-
-        srcIg = (IgniteEx)src;
-        destIg = (IgniteEx)destOrigin;
-
-        Map<String, String> cacheNames = cacheNameMap;
-        List<Map.Entry<String, Integer>> parts = partitions(srcIg, cacheNames.keySet());
-
-        pending.addAll(parts);
+        partitionsToRead.addAll(parts);
         partsCnt = parts.size();
-
-        CacheDataMigrationThreadPools workers = new CacheDataMigrationThreadPools(cfg);
-        readers.set(workers.readerThreads());
-
-        info("Cache data worker pools [readers=" + workers.readerThreads() + ", readerPool=dedicated, writers=" +
-            workers.writerThreads() + ", writerPool=dedicated].");
-
-        boolean success = false;
-        BlockingQueue<Future<Void>> completed = new LinkedBlockingQueue<>();
-
-        ExecutorCompletionService<Void> readerCompletion = new ExecutorCompletionService<>(workers.readerPool(), completed);
-        ExecutorCompletionService<Void> writerCompletion = new ExecutorCompletionService<>(workers.writerPool(), completed);
-
-        ScheduledExecutorService reporter = Executors.newSingleThreadScheduledExecutor(new IgniteThreadFactory(null, "data-migration-log"));
-
-        try {
-            reporter.scheduleAtFixedRate(this::logProgress, 1, 1, TimeUnit.MINUTES);
-
-            for (int i = 0; i < workers.writerThreads(); i++)
-                writerCompletion.submit(this::write);
-
-            for (int i = 0; i < workers.readerThreads(); i++)
-                readerCompletion.submit(() -> read(transformer));
-
-            for (int i = 0; i < workers.readerThreads() + workers.writerThreads(); i++)
-                completed.take().get();
-
-            success = true;
-            logProgress();
-        }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-
-            throw new IgniteException("Migration interrupted.", e);
-        }
-        catch (ExecutionException e) {
-            throw new IgniteException("Migration worker failed.", e.getCause());
-        }
-        finally {
-            reporter.shutdownNow();
-
-            cursors.forEach(cursor -> U.close(cursor, log));
-
-            try {
-                closeStreamers(success);
-            }
-            finally {
-                workers.stop(success);
-            }
-        }
     }
 
-    /** */
-    private Void write() throws IgniteInterruptedCheckedException {
-        try {
-            while (readers.get() != 0 || !batches.isEmpty()) {
-                Batch batch = batches.poll(100, TimeUnit.MILLISECONDS);
-
-                if (batch != null) {
-                    writeLimiter.acquire(batch.entries.size());
-                    writeBatch(destIg, batch.cache, batch.entries);
-                    written.addAndGet(batch.entries.size());
-                }
-            }
-        }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-
-            throw new IgniteInterruptedCheckedException(e);
-        }
-        catch (IgniteInterruptedCheckedException e) {
-            throw e;
-        }
-
-        return null;
+    /** {@inheritDoc} */
+    @Override protected int readWorkerCount(int readerThreads) {
+        return readerThreads;
     }
 
-    /** Flushes streamers once every writer has finished. */
-    private void closeStreamers(boolean success) {
-        IgniteException error = null;
-
-        for (IgniteDataStreamer<Object, Object> streamer : streamers.values()) {
-            try {
-                if (success)
-                    streamer.close();
-                else
-                    streamer.close(true);
-            }
-            catch (RuntimeException e) {
-                if (success && error == null)
-                    error = new IgniteException("Failed to flush DataStreamer migration buffers.", e);
-                else if (error != null)
-                    error.addSuppressed(e);
-                else
-                    log.warning("Failed to cancel DataStreamer after migration failure.", e);
-            }
-        }
-
-        streamers.clear();
-
-        if (error != null)
-            throw error;
+    /** {@inheritDoc} */
+    @Override protected void submitReadTasks(
+        ExecutorCompletionService<Void> exec,
+        int readWorkers,
+        MigrationDestination<?> dest,
+        @Nullable MigrationTransformer<CacheMigrationEntry> transformer
+    ) {
+        for (int i = 0; i < readWorkers; i++)
+            exec.submit(() -> read(transformer));
     }
 
-    /** */
-    private Void read(MigrationTransformer<CacheEntryMigration> transformer) throws InterruptedException {
+    /** Reads partitions from the shared queue until it is exhausted. */
+    private Void read(@Nullable MigrationTransformer<CacheMigrationEntry> transformer) throws InterruptedException {
         try {
-            Map.Entry<String, Integer> task;
+            T2<String, Integer> task;
 
-            while ((task = pending.poll()) != null) {
+            while ((task = partitionsToRead.poll()) != null) {
                 if (Thread.currentThread().isInterrupted())
                     throw new InterruptedException();
 
@@ -337,40 +121,36 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Ca
         }
     }
 
-    /** */
+    /** Scans one partition into the bounded writer queue. */
     private void readPartition(
-        Map.Entry<String, Integer> task,
-        MigrationTransformer<CacheEntryMigration> transformer
+        T2<String, Integer> cacheAndPart,
+        @Nullable MigrationTransformer<CacheMigrationEntry> transformer
     ) throws InterruptedException {
         long start = System.nanoTime();
+
+        String cache = cacheAndPart.get1();
+        int part = cacheAndPart.get2();
+
         long cnt = 0;
-        List<CacheEntryMigration> batch = new ArrayList<>(cfg.batchSize());
-        String cache = task.getKey();
-        int part = task.getValue();
+        List<CacheMigrationEntry> batch = new ArrayList<>(cfg.batchSize());
+
         String destCache = cacheNameMap.get(cache);
 
         info("Reading partition [cache=" + cache + ", partition=" + part + "].");
 
-        QueryCursor<CacheEntryMigration> cursor = readCursor(srcIg, cache, part);
+        QueryCursor<CacheMigrationEntry> cursor = readCursor(src, cache, part);
 
         cursors.add(cursor);
 
         try (cursor) {
-            for (CacheEntryMigration item : cursor) {
+            for (CacheMigrationEntry item : cursor) {
                 if (Thread.currentThread().isInterrupted())
                     throw new InterruptedException();
 
                 if (item == null)
                     continue;
 
-                try {
-                    readLimiter.acquire(1);
-                }
-                catch (IgniteInterruptedCheckedException e) {
-                    Thread.currentThread().interrupt();
-
-                    throw new InterruptedException();
-                }
+                acquireReadPermit();
 
                 read.incrementAndGet();
                 cnt++;
@@ -381,289 +161,94 @@ public class CacheDataTransferrer extends AbstractCategoryTransferrer<Object, Ca
                 if (item == null)
                     continue;
 
-                batch.add(item);
-
-                if (batch.size() == cfg.batchSize()) {
-                    batches.put(new Batch(destCache, batch));
-                    batch = new ArrayList<>(cfg.batchSize());
-                }
+                batch = addBatchEntry(destCache, item, batch);
             }
         }
         finally {
             cursors.remove(cursor);
         }
 
-        if (!batch.isEmpty())
-            batches.put(new Batch(destCache, batch));
+        flushBatch(destCache, batch);
 
         info("Finished partition [cache=" + cache + ", partition=" + part +
             ", entries=" + cnt + ", elapsedMs=" + TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start) +
             ", completed=" + completed.incrementAndGet() + ", total=" + partsCnt + "].");
     }
 
-    /** */
-    private void logProgress() {
-        info("Migration records [read=" + read.get() + ", written=" + written.get() + "].");
-    }
-
-    // --- Source-side helpers ---
-
-    /** Partitions interleaved by primary server. */
-    static List<Map.Entry<String, Integer>> partitions(IgniteEx ig, Collection<String> cacheNames) {
-        Map<UUID, Queue<Map.Entry<String, Integer>>> perNode = new LinkedHashMap<>();
+    /**
+     * Partitions interleaved round-robin by primary node so that concurrent readers
+     * naturally spread across different servers.
+     */
+    private static List<T2<String, Integer>> partitions(IgniteEx ig, Collection<String> cacheNames) {
+        Map<UUID, Deque<T2<String, Integer>>> byNode = new LinkedHashMap<>();
 
         for (String cache : cacheNames) {
-            for (int part = 0; part < ig.affinity(cache).partitions(); part++) {
-                UUID primary = ig.affinity(cache).mapPartitionToNode(part).id();
+            Affinity<?> aff = ig.affinity(cache);
 
-                perNode.computeIfAbsent(primary, key -> new ArrayDeque<>())
-                    .add(new SimpleImmutableEntry<>(cache, part));
-            }
+            for (int p = 0; p < aff.partitions(); p++)
+                byNode.computeIfAbsent(aff.mapPartitionToNode(p).id(), k -> new ArrayDeque<>())
+                    .add(new T2<>(cache, p));
         }
 
-        List<Map.Entry<String, Integer>> res = new ArrayList<>();
-        boolean more;
+        List<T2<String, Integer>> res = new ArrayList<>();
+        boolean added = true;
 
-        do {
-            more = false;
+        while (added) {
+            added = false;
 
-            for (Queue<Map.Entry<String, Integer>> queue : perNode.values()) {
-                Map.Entry<String, Integer> task = queue.poll();
-
-                if (task != null) {
-                    res.add(task);
-                    more = true;
+            for (Deque<T2<String, Integer>> parts : byNode.values()) {
+                if (!parts.isEmpty()) {
+                    res.add(parts.removeFirst());
+                    added = true;
                 }
             }
         }
-        while (more);
 
         return res;
     }
 
     /** */
     @SuppressWarnings("unchecked")
-    QueryCursor<CacheEntryMigration> readCursor(IgniteEx ig, String cache, int part) {
-        openCache(ig, cache);
+    QueryCursor<CacheMigrationEntry> readCursor(IgniteEx ig, String cache, int part) {
+        openSourceCache(ig, cache);
 
         GridCacheContext<Object, Object> ctx = ig.cachex(cache).context();
-        int pageSize = cfg.batchSize();
 
         return new QueryCursorImpl<>(() -> {
-            CacheOperationContext prev = ctx.gate().enter(null);
-
             try {
-                ctx.checkSecurity(CACHE_READ);
+                ClusterNode primaryNode = ig.affinity(cache).mapPartitionToNode(part);
 
-                if (ctx.topology().lostPartitions().contains(part))
-                    throw new IgniteException("Source partition is lost [partition=" + part + "].");
+                CacheQuery<CacheMigrationEntry> qry = ctx.queries().createScanQuery(
+                    null,
+                    new CaccheMigrationEntryReader(cache, cfg.skipExpireTime()),
+                    part,
+                    true,
+                    false,
+                    Collections.emptySet()
+                );
 
-                ClusterNode primary = ig.affinity(cache).mapPartitionToNode(part);
-                CacheQuery<CacheEntryMigration> qry = ctx.queries().createScanQuery(null,
-                    new MigrationEntryReader(cache), part, true, false, Collections.emptySet());
+                qry.pageSize(cfg.batchSize());
 
-                qry.pageSize(pageSize);
-
-                // Public partition ScanQuery can select a backup. Route the same scan engine to the primary explicitly.
                 return ctx.kernalContext().query().executeQuery(SCAN, cache, ctx,
-                    new IgniteOutClosureX<GridCloseableIterator<CacheEntryMigration>>() {
-                        @Override public GridCloseableIterator<CacheEntryMigration> applyx() throws IgniteCheckedException {
-                            return ctx.queries().scanQueryDistributed(qry, Collections.singleton(primary));
+                    new IgniteOutClosureX<GridCloseableIterator<CacheMigrationEntry>>() {
+                        @Override public GridCloseableIterator<CacheMigrationEntry> applyx() throws IgniteCheckedException {
+                            return ctx.queries().scanQueryDistributed(qry, Collections.singleton(primaryNode));
                         }
                     }, true);
             }
             catch (IgniteCheckedException e) {
                 throw new IgniteException("Failed to scan source partition [cache=" + cache + "].", e);
             }
-            finally {
-                ctx.gate().leave(prev);
-            }
         });
     }
 
-    // --- Destination-side helpers ---
-
-    /** */
-    private void writeBatch(IgniteEx ig, String name, List<CacheEntryMigration> entries) {
-        IgniteCache<Object, Object> cache = openPublicCache(ig, name).withKeepBinary().withSkipStore();
-        IgniteInternalCache<Object, Object> internal = ig.cachex(name).keepBinary().withSkipStore();
-        GridCacheContext<Object, Object> ctx = internal.context();
-        boolean keepVer = !cfg.skipConflictVersion();
-
-        if (cfg.useDataStreamer()) {
-            if (entries.stream().anyMatch(e -> keepVer && e.version() != null ||
-                !cfg.skipExpireTime() && e.expireTime() != 0)) {
-                throw new IgniteException("DataStreamer cannot preserve entry metadata. " +
-                    "Use --skip-conflict-version and --skip-expire-time, or disable DataStreamer.");
-            }
-
-            IgniteDataStreamer<Object, Object> streamer = streamers.computeIfAbsent(name, key -> {
-                IgniteDataStreamer<Object, Object> res = ig.dataStreamer(key);
-
-                try {
-                    res.skipStore(true);
-                    cfg.getDataStreamerConfiguration().accept(res);
-
-                    return res;
-                }
-                catch (RuntimeException e) {
-                    res.close(true);
-
-                    throw e;
-                }
-            });
-
-            for (CacheEntryMigration entry : entries)
-                streamer.addData(destinationKey(entry.key()), destinationValue(ctx, entry));
-
-            return;
-        }
-
-        if (keepVer && !ctx.conflictNeedResolve()) {
-            throw new IgniteException("Conflict resolution must be configured on the destination servers " +
-                "and client node to preserve conflict versions [cache=" + name +
-                "]. Use --skip-conflict-version to ignore source versions.");
-        }
-
-        if (keepVer || !cfg.skipExpireTime() && entries.stream().anyMatch(e -> e.expireTime() != 0)) {
-            Map<KeyCacheObject, GridCacheDrInfo> batch = new LinkedHashMap<>();
-
-            for (CacheEntryMigration entry : entries) {
-                long expire = cfg.skipExpireTime() ? 0 : entry.expireTime();
-
-                if (expire > 0 && expire <= System.currentTimeMillis())
-                    continue;
-
-                GridCacheVersion ver = keepVer ? entry.version() :
-                    ctx.versions().next(ctx.affinity().affinityTopologyVersion().topologyVersion());
-
-                if (ver == null)
-                    throw new IgniteException("Missing source conflict version [cache=" + name + "].");
-
-                ver = ver.conflictVersion();
-
-                // Recalculate affinity: source and destination partition counts may differ.
-                Object key = destinationKey(entry.key());
-                KeyCacheObject cacheKey = ctx.toCacheKeyObject(key);
-
-                Object val = destinationValue(ctx, entry);
-
-                batch.put(cacheKey, expire == 0 ? new GridCacheDrInfo(ctx.toCacheObject(val), ver) :
-                    new GridCacheDrExpirationInfo(ctx.toCacheObject(val), ver, 0, expire));
-            }
-
-            if (!batch.isEmpty()) {
-                try {
-                    internal.putAllConflict(batch);
-                }
-                catch (IgniteCheckedException e) {
-                    throw new IgniteException("Failed to write conflict-aware batch [cache=" + name + "].", e);
-                }
-            }
-        }
-        else {
-            Map<Object, Object> batch = new LinkedHashMap<>();
-
-            for (CacheEntryMigration entry : entries)
-                batch.put(destinationKey(entry.key()), destinationValue(ctx, entry));
-
-            if (!cfg.skipExpireTime())
-                cache = cache.withExpiryPolicy(new ModifiedExpiryPolicy(Duration.ETERNAL));
-
-            if (batch.size() == 1) {
-                Map.Entry<Object, Object> entry = batch.entrySet().iterator().next();
-
-                cache.put(entry.getKey(), entry.getValue());
-            }
-            else if (!batch.isEmpty())
-                cache.putAll(batch);
-        }
-    }
-
-    /** Discards any source-side cached affinity partition. */
-    private static Object destinationKey(Object key) {
-        return key instanceof KeyCacheObject ? ((KeyCacheObject)key).copy(-1) : key;
-    }
-
-    /** */
-    private static Object destinationValue(GridCacheContext<?, ?> ctx, CacheEntryMigration entry) {
-        return ctx.dataStructuresCache() ? dataStructureValue(ctx, entry.value()) : entry.value();
-    }
-
-    /** Rebase cluster timestamps without transferring source node/thread ownership. */
-    private static Object dataStructureValue(GridCacheContext<?, ?> ctx, Object val) {
-        long gridStartTime = ctx.discovery().gridStartTime();
-
-        if (val instanceof GridCacheCountDownLatchValue latch) {
-            GridCacheCountDownLatchValue res = new GridCacheCountDownLatchValue(latch.initialCount(),
-                latch.autoDelete(), gridStartTime);
-
-            res.set(latch.get());
-
-            return res;
-        }
-
-        if (val instanceof GridCacheSemaphoreState sem) {
-            if (sem.getWaiters() != null && sem.getWaiters().values().stream().anyMatch(cnt -> cnt != 0))
-                throw new IgniteException("Cannot migrate a semaphore with acquired permits.");
-
-            GridCacheSemaphoreState res = new GridCacheSemaphoreState(sem.getCount(), new HashMap<>(),
-                sem.isFailoverSafe(), gridStartTime);
-
-            res.setBroken(sem.isBroken());
-
-            return res;
-        }
-
-        if (val instanceof GridCacheLockState lock) {
-            if (lock.get() != 0 || !lock.getNodes().isEmpty() ||
-                lock.getConditionMap().values().stream().anyMatch(nodes -> !nodes.isEmpty()) ||
-                lock.getSignals() != null && lock.getSignals().values().stream().anyMatch(signals -> !signals.isEmpty()))
-                throw new IgniteException("Cannot migrate a lock with an owner, waiters or pending signals.");
-
-            GridCacheLockState res = new GridCacheLockState(0, null, 0, lock.isFailoverSafe(), lock.isFair(), gridStartTime);
-
-            res.setConditionMap(new HashMap<>(lock.getConditionMap()));
-
-            return res;
-        }
-
-        return val;
-    }
-
-    // --- Shared helpers ---
-
-    /** */
-    private static void openCache(IgniteEx ig, String name) {
+    /** Ensures the source cache is open and started before scanning it. */
+    private static void openSourceCache(IgniteEx ig, String name) {
         try {
             ig.context().cache().getOrStartCache(name);
         }
         catch (IgniteCheckedException e) {
-            throw new IgniteException("Failed to open migration cache [cache=" + name + "].", e);
+            throw new IgniteException("Failed to open source cache [cache=" + name + "].", e);
         }
     }
-
-    /** Opens user or data structure caches without exposing system caches through the public API. */
-    private static IgniteCache<Object, Object> openPublicCache(IgniteEx ig, String name) {
-        openCache(ig, name);
-
-        return ((IgniteCacheProxyImpl<Object, Object>)ig.context().cache().<Object, Object>jcache(name))
-            .gatewayWrapper();
-    }
-
-    /** A batch exclusively owned by a writer after publication. */
-    private static class Batch {
-        /** */
-        private final String cache;
-
-        /** */
-        private final List<CacheEntryMigration> entries;
-
-        /** */
-        Batch(String cache, List<CacheEntryMigration> entries) {
-            this.cache = cache;
-            this.entries = entries;
-        }
-    }
-
 }

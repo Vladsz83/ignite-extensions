@@ -19,7 +19,6 @@ package org.apache.ignite.util.migration.category.cache.configuration;
 
 import java.util.Collection;
 import java.util.Collections;
-import java.util.LinkedHashMap;
 import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.processors.cache.CacheType;
 import org.apache.ignite.logger.java.JavaLogger;
@@ -33,16 +32,12 @@ import static org.junit.Assert.assertEquals;
 public class ThinClientCacheConfigurationsTransferrerTest {
     /** A transferrer uses the supplied destination without connecting it. */
     @Test public void testAcceptsPreparedCache() {
-        CacheConfigurationMigration cache = new CacheConfigurationMigration("src", new CacheConfiguration<>("dest"), false, CacheType.USER);
+        CacheConfigurationMigrationEntity cache = new CacheConfigurationMigrationEntity("src", new CacheConfiguration<>("dest"), false, CacheType.USER, false);
         MigrationDestination dest = new MigrationDestination() {
             @Override public void accept(MigrationCategory category, Object entity) {
                 assertEquals(MigrationCategory.CACHE_CONFIGURATION, category);
-                assertEquals("src", ((CacheConfigurationMigration)entity).sourceName());
-                assertEquals("dest", ((CacheConfigurationMigration)entity).configuration().getName());
-            }
-
-            @Override public LinkedHashMap<MigrationCategory, Class<?>> supportedCategories() {
-                return new LinkedHashMap<>();
+                assertEquals("src", ((CacheConfigurationMigrationEntity)entity).sourceName());
+                assertEquals("dest", ((CacheConfigurationMigrationEntity)entity).configuration().getName());
             }
 
             @Override public Object connect() {
@@ -52,16 +47,19 @@ public class ThinClientCacheConfigurationsTransferrerTest {
             @Override public void close() {
                 // No-op.
             }
+
+            @Override public Object origin() {
+                return null;
+            }
         };
 
         AbstractCacheConfigurationsTransferrer<Object> transferrer =
             new AbstractCacheConfigurationsTransferrer<Object>(new Object(), new CacheMigrationConfiguration(), new JavaLogger()) {
-                @Override protected Collection<CacheConfigurationMigration> sourceCaches() {
+                @Override protected Collection<CacheConfigurationMigrationEntity> sourceCaches() {
                     return Collections.singletonList(cache);
                 }
             };
 
-        transferrer.prepareCaches(null, false, item -> item);
-        transferrer.transfer(dest, null);
+        transferrer.transfer(dest, item -> item);
     }
 }

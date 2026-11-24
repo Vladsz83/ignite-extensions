@@ -21,11 +21,11 @@ import org.apache.ignite.configuration.CacheConfiguration;
 import org.apache.ignite.internal.processors.cache.CacheType;
 
 /** A cache definition, retaining the SQL-created flag and the original source name. */
-public class CacheConfigurationMigration {
+public class CacheConfigurationMigrationEntity {
     /** Original source cache name, retained if a transformer renames the destination cache. */
     private final String srcName;
 
-    /** Cache configuration used to create or validate the cache on the destination. */
+    /** Cache configuration used to create the cache on the destination. */
     private final CacheConfiguration<?, ?> cfg;
 
     /** Whether the source cache was created by SQL DDL, such as {@code CREATE TABLE}. */
@@ -34,10 +34,7 @@ public class CacheConfigurationMigration {
     /** Ignite cache type, such as a user cache or a data structures cache. */
     private final CacheType type;
 
-    /** Whether destination cache creation is disabled for this migration. */
-    private final boolean noCacheCreate;
-
-    /** Whether the destination's existing cache is accepted. */
+    /** Whether an existing destination cache is accepted instead of failing. */
     private final boolean createCacheIfNotExists;
 
     /**
@@ -45,26 +42,14 @@ public class CacheConfigurationMigration {
      * @param cfg Cache configuration.
      * @param sql Whether the source cache was created by SQL DDL.
      * @param type Cache type.
-     */
-    public CacheConfigurationMigration(String srcName, CacheConfiguration<?, ?> cfg, boolean sql, CacheType type) {
-        this(srcName, cfg, sql, type, false, false);
-    }
-
-    /**
-     * @param srcName Source cache name.
-     * @param cfg Cache configuration.
-     * @param sql Whether the source cache was created by SQL DDL.
-     * @param type Cache type.
-     * @param noCacheCreate Whether destination cache creation is disabled.
      * @param createCacheIfNotExists Whether an existing destination cache is accepted.
      */
-    public CacheConfigurationMigration(String srcName, CacheConfiguration<?, ?> cfg, boolean sql, CacheType type,
-        boolean noCacheCreate, boolean createCacheIfNotExists) {
+    public CacheConfigurationMigrationEntity(String srcName, CacheConfiguration<?, ?> cfg, boolean sql, CacheType type,
+        boolean createCacheIfNotExists) {
         this.srcName = srcName;
         this.cfg = cfg;
         this.sql = sql;
         this.type = type;
-        this.noCacheCreate = noCacheCreate;
         this.createCacheIfNotExists = createCacheIfNotExists;
     }
 
@@ -88,12 +73,7 @@ public class CacheConfigurationMigration {
         return type;
     }
 
-    /** @return Whether destination cache creation is disabled. */
-    public boolean noCacheCreate() {
-        return noCacheCreate;
-    }
-
-    /** @return Whether an existing destination cache is accepted. */
+    /** @return Whether an existing destination cache is accepted instead of failing. */
     public boolean createCacheIfNotExists() {
         return createCacheIfNotExists;
     }

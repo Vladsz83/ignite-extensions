@@ -19,7 +19,6 @@ package org.apache.ignite.util.migration.category;
 
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicReference;
 import org.apache.ignite.logger.java.JavaLogger;
@@ -56,6 +55,16 @@ public class AbstractCategoryTransferrerTest {
         assertSame(transferThread, dstThread.get());
     }
 
+    /** The post-accept hook fires with the transformed entity and only for accepted (non-filtered) items. */
+    @Test public void testOnEntityAcceptedFiresOnlyForAcceptedEntities() {
+        List<String> hook = new ArrayList<>();
+        TestDestination dest = new TestDestination(new AtomicReference<>());
+
+        new HookTransferrer(hook).transfer(dest, item -> "first".equals(item) ? null : item.toUpperCase());
+
+        assertEquals(Arrays.asList("SECOND"), hook);
+    }
+
     /** Minimal direct category transferrer used to verify synchronous execution. */
     private static class TestTransferrer extends AbstractCategoryTransferrer<Object, String> {
         /** Captured source read thread. */
@@ -69,7 +78,7 @@ public class AbstractCategoryTransferrerTest {
         }
 
         /** {@inheritDoc} */
-        @Override protected void doTransfer(MigrationDestination dest, @Nullable MigrationTransformer<String> transformer) {
+        @Override protected void doTransfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<String> transformer) {
             sourceThread.set(Thread.currentThread());
             transferEntity(dest, transformer, "first");
             transferEntity(dest, transformer, "second");
@@ -78,6 +87,30 @@ public class AbstractCategoryTransferrerTest {
         /** {@inheritDoc} */
         @Override protected String entityDescription(String entity) {
             return "test item [value=" + entity + "]";
+        }
+    }
+
+    /** Transferrer that records post-accept hook invocations. */
+    private static class HookTransferrer extends AbstractCategoryTransferrer<Object, String> {
+        /** Recorded hook entities. */
+        private final List<String> recorded;
+
+        /** */
+        HookTransferrer(List<String> recorded) {
+            super(new Object(), MigrationCategory.OTHER, String.class, new JavaLogger());
+
+            this.recorded = recorded;
+        }
+
+        /** {@inheritDoc} */
+        @Override protected void doTransfer(MigrationDestination<?> dest, @Nullable MigrationTransformer<String> transformer) {
+            transferEntity(dest, transformer, "first");
+            transferEntity(dest, transformer, "second");
+        }
+
+        /** {@inheritDoc} */
+        @Override protected void onEntityAccepted(MigrationDestination<?> dest, String entity) {
+            recorded.add(entity);
         }
     }
 
@@ -95,14 +128,6 @@ public class AbstractCategoryTransferrerTest {
         }
 
         /** {@inheritDoc} */
-        @Override public LinkedHashMap<MigrationCategory, Class<?>> supportedCategories() {
-            LinkedHashMap<MigrationCategory, Class<?>> categories = new LinkedHashMap<>();
-            categories.put(MigrationCategory.OTHER, String.class);
-
-            return categories;
-        }
-
-        /** {@inheritDoc} */
         @Override public void accept(MigrationCategory category, Object entity) {
             writeThread.set(Thread.currentThread());
             accepted.add((String)entity);
@@ -116,6 +141,11 @@ public class AbstractCategoryTransferrerTest {
         /** {@inheritDoc} */
         @Override public void close() {
             // No connection required in this test.
+        }
+
+        /** {@inheritDoc} */
+        @Override public Object origin() {
+            return null;
         }
     }
 }

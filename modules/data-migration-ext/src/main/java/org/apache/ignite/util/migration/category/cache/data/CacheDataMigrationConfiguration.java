@@ -41,14 +41,8 @@ public class CacheDataMigrationConfiguration {
     /** Cache-data reader worker count. */
     private int readThreads = DFLT_READ_THREADS;
 
-    /** Whether the reader count was explicitly configured. */
-    private boolean readThreadsConfigured;
-
     /** Cache-data writer worker count. */
     private int writeThreads = DFLT_WRITE_THREADS;
-
-    /** Whether the writer count was explicitly configured. */
-    private boolean writeThreadsConfigured;
 
     /** Number of queued batches, independent of the number of source partitions. */
     private int queueCapacity = DFLT_QUEUE_CAPACITY;
@@ -71,9 +65,6 @@ public class CacheDataMigrationConfiguration {
     /** */
     private Consumer<IgniteDataStreamer<Object, Object>> streamerCfg = streamer -> { /* No-op. */ };
 
-    /** Human-readable description of the configured DataStreamer settings for startup logging. */
-    private String streamerCfgDescription = "Ignite defaults";
-
     /** Validates settings before a migration starts. */
     public void validate() {
         positive(batchSize, "batch-size");
@@ -85,14 +76,8 @@ public class CacheDataMigrationConfiguration {
             throw new IllegalArgumentException("Read and write rate limits must be non-negative.");
     }
 
-    /** */
-    private static void positive(int val, String name) {
-        if (val <= 0)
-            throw new IllegalArgumentException(name + " must be positive.");
-    }
-
     /** @return Maximum entries per batch. */
-    public int getBatchSize() {
+    public int batchSize() {
         return batchSize;
     }
 
@@ -102,31 +87,29 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Reader worker count. */
-    public int getReadThreads() {
+    public int readThreads() {
         return readThreads;
     }
 
-    /** @param val Positive number of reader threads. */
+    /** @param val Reader worker count. */
     public void setReadThreads(int val) {
         positive(val, "read-threads");
         readThreads = val;
-        readThreadsConfigured = true;
     }
 
     /** @return Writer worker count. */
-    public int getWriteThreads() {
+    public int writeThreads() {
         return writeThreads;
     }
 
-    /** @param val Positive number of writer threads. */
+    /** @param val Writer worker count. */
     public void setWriteThreads(int val) {
         positive(val, "write-threads");
         writeThreads = val;
-        writeThreadsConfigured = true;
     }
 
     /** @return Maximum queued batches. */
-    public int getQueueCapacity() {
+    public int queueCapacity() {
         return queueCapacity;
     }
 
@@ -135,18 +118,8 @@ public class CacheDataMigrationConfiguration {
         queueCapacity = val;
     }
 
-    /** @return Whether read threads have an explicit dedicated-pool override. */
-    public boolean isReadThreadsConfigured() {
-        return readThreadsConfigured;
-    }
-
-    /** @return Whether write threads have an explicit dedicated-pool override. */
-    public boolean isWriteThreadsConfigured() {
-        return writeThreadsConfigured;
-    }
-
     /** @return Global read entries per second, or zero. */
-    public int getReadLimitInSec() {
+    public int readLimitInSec() {
         return readLimit;
     }
 
@@ -156,7 +129,7 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Global write entries per second, or zero. */
-    public int getWriteLimitInSec() {
+    public int writeLimitInSec() {
         return writeLimit;
     }
 
@@ -166,7 +139,7 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Whether source expiry is ignored. */
-    public boolean isSkipExpireTime() {
+    public boolean skipExpireTime() {
         return skipExpireTime;
     }
 
@@ -176,7 +149,7 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Whether source conflict versions are ignored. */
-    public boolean isSkipConflictVersion() {
+    public boolean skipConflictVersion() {
         return skipConflictVer;
     }
 
@@ -186,7 +159,7 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Whether to load data using a data streamer. */
-    public boolean isUseDataStreamer() {
+    public boolean useDataStreamer() {
         return useDataStreamer;
     }
 
@@ -196,22 +169,18 @@ public class CacheDataMigrationConfiguration {
     }
 
     /** @return Data streamer configuration callback. */
-    public Consumer<IgniteDataStreamer<Object, Object>> getDataStreamerConfiguration() {
+    public Consumer<IgniteDataStreamer<Object, Object>> dataStreamerConfiguration() {
         return streamerCfg;
     }
 
-    /** */
+    /** @param cfg Data streamer configuration callback. */
     public void setDataStreamerConfiguration(Consumer<IgniteDataStreamer<Object, Object>> cfg) {
         streamerCfg = Objects.requireNonNull(cfg);
     }
 
-    /** @return Human-readable DataStreamer configuration description. */
-    public String getDataStreamerConfigurationDescription() {
-        return streamerCfgDescription;
-    }
-
     /** */
-    public void setDataStreamerConfigurationDescription(String streamerCfgDescription) {
-        this.streamerCfgDescription = streamerCfgDescription;
+    private static void positive(int val, String name) {
+        if (val <= 0)
+            throw new IllegalArgumentException(name + " must be positive.");
     }
 }
